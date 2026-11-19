@@ -11,57 +11,126 @@
   <div class="mast">
     <div>
       <h1>LaunchLens</h1>
-      <p class="tag">Which pre-token protocol is worth farming next — and what to do about it.</p>
+      <p class="tag">Pre-token DeFi protocols ranked by implied circulating market cap &amp; farming economics.</p>
     </div>
     <div class="meta" id="meta"></div>
   </div>
-  <details class="how">
-    <summary>How value is calculated</summary>
-    <p>Every implied value comes from this snapshot's own figures — no list of names is typed in by hand.</p>
-    <p class="formula">implied value = TVL &times; category multiple &times; momentum &times; age factor</p>
-    <ul>
-      <li><b>Category multiple</b> — the median market-cap-to-TVL ratio of the tokenised protocols in the same category, measured from this snapshot. It is the market's own pricing of a tokenised protocol in that category. A category with fewer than three tokenised protocols falls back to the global median.</li>
-      <li><b>Momentum</b> — the protocol's 7-day TVL change, clamped to &plusmn;30%. Growing TVL lifts the value; shrinking TVL cuts it.</li>
-      <li><b>Age factor</b> — days since DefiLlama began tracking the protocol with no token, on a log scale capped at +30%. Longer at scale with no token means more pent-up launch value.</li>
-    </ul>
-    <p>The board holds protocols that record no token. Protocols whose token already trades are not rows — they exist only to calibrate the multiples. Wrapped, staked and bridged products of tokens that already trade are left off too: they are not launches waiting to happen. Every row's value can be reproduced from the snapshot by the formula above.</p>
-  </details>
+  <section class="kpis" id="kpis" aria-label="Key metrics"></section>
+  <nav class="tabs" id="tabs" aria-label="Views">
+    <button class="tab active" data-tab="board">Ranked Board</button>
+    <button class="tab" data-tab="anchors">Fit Anchors</button>
+    <button class="tab" data-tab="audit">Snapshot Audit</button>
+  </nav>
 </header>
-
 <main>
-  <div class="filters">
-    <input id="q" type="search" placeholder="Search name or slug" aria-label="Search name or slug">
-    <select id="cat" aria-label="Category"><option value="">All categories</option></select>
-    <select id="chain" aria-label="Chain"><option value="">All chains</option></select>
-    <label class="wl"><input id="wl" type="checkbox"> Watchlist only</label>
-    <label class="min">Min TVL $ <input id="mintvl" type="number" min="0" step="1000000" placeholder="0"></label>
-    <span class="count" id="count"></span>
-  </div>
-  <table>
-    <thead><tr>
-      <th><button data-sort="rank">Rank</button></th>
-      <th>Protocol</th>
-      <th>Category</th>
-      <th>Chains</th>
-      <th><button data-sort="tvl">TVL</button></th>
-      <th>Multiple</th>
-      <th><button data-sort="chg">7d</button></th>
-      <th><button data-sort="implied">Implied value</button></th>
-      <th><button data-sort="age">Age</button></th>
-    </tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <p class="hint">Click any row for the full detail view: value breakdown and farm plan.</p>
+  <section id="view-board">
+    <details class="how" id="how">
+      <summary>How value is calculated <span class="sum-note" id="mdlSummary"></span></summary>
+      <div class="mdl-body">
+        <div class="mdl-top">
+          <div class="mdl-exp" id="mdlNarrative"></div>
+          <div class="mdl-scatter">
+            <h4>Predicted vs Actual Market Cap (Fit Anchors, log-log)</h4>
+            <div id="mdlScatter"></div>
+          </div>
+        </div>
+        <div class="mdl-grid">
+          <div>
+            <h4>Out-of-sample Cross-Validation &amp; Holdout</h4>
+            <table class="mini-tbl">
+              <thead><tr><th>Evaluation Set</th><th class="num">N</th><th class="num">MdAPE</th><th class="num">Within 2&times;</th><th class="num">Spearman &rho;</th></tr></thead>
+              <tbody id="mdlCv"></tbody>
+            </table>
+          </div>
+          <div>
+            <h4>Per-Category Hierarchical Fits</h4>
+            <div class="catf-wrap">
+              <table class="mini-tbl">
+                <thead><tr><th>Category</th><th class="num">Anchors</th><th class="num">Log Intercept</th><th class="num">Mult</th><th class="num">Shrinkage</th></tr></thead>
+                <tbody id="mdlCats"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </details>
+    <section class="sandbox" aria-label="Farm economics sandbox">
+      <div class="sb-controls">
+        <label>Deposit $ <input class="ctl" id="sbDep" type="number" min="1" step="100" value="1000"></label>
+        <label>Holding days <input class="ctl" id="sbDays" type="number" min="1" max="730" step="15" value="90"></label>
+        <label>Airdrop pool %
+          <select class="ctl" id="sbPool">
+            <option value="5">Conservative (5%)</option>
+            <option value="8" selected>Base (8%)</option>
+            <option value="12">Bull (12%)</option>
+          </select>
+        </label>
+      </div>
+      <p class="sb-formula">Gross = Implied &times; Pool% &times; [Deposit / (TVL + Deposit)] &times; (Days / 90) &middot; Net = Gross &minus; Round-trip Fees &middot; FARM if Net &ge; $50 &amp; ROI &ge; 5%, THIN if Net &gt; $0, else SKIP.</p>
+    </section>
+    <div class="cmp-bar" id="cmpBar" hidden>
+      <span>Compare (<b id="cmpCnt">0</b>/3): <span id="cmpList"></span></span>
+      <span class="cmp-actions">
+        <button class="btn primary" id="cmpGo">Compare Selected</button>
+        <button class="btn" id="cmpClr">Clear</button>
+      </span>
+    </div>
+    <div class="filters">
+      <input class="ctl" id="q" type="search" placeholder="Search name or slug" aria-label="Search name or slug">
+      <select class="ctl" id="cat" aria-label="Category"><option value="">All categories</option></select>
+      <select class="ctl" id="chain" aria-label="Chain"><option value="">All chains</option></select>
+      <select class="ctl" id="verd" aria-label="Verdict"><option value="">All verdicts</option><option value="2">FARM</option><option value="1">THIN</option><option value="0">SKIP</option></select>
+      <label class="min">Min TVL $ <input class="ctl" id="mintvl" type="number" min="0" step="1000000" placeholder="0"></label>
+      <label class="wl"><input id="wl" type="checkbox"> Watchlist only</label>
+      <button class="btn" id="rstBtn" type="button">Reset</button>
+      <button class="btn primary" id="expBtn" type="button">Export CSV</button>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th class="chk-col" title="Select 2-3 to compare">Cmp</th><th><button data-sort="rank">Rank</button></th><th>Protocol</th><th>Category</th><th>Chains</th><th class="num"><button data-sort="tvl">TVL</button></th><th class="num"><button data-sort="chg">7d</button></th><th class="num"><button data-sort="implied">Implied Value</button></th><th class="num"><button data-sort="net">Net / Verdict</button></th><th class="num"><button data-sort="age">Age</button></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="hint">Click any row for its full valuation breakdown, farm economics, and 5-step farm plan. Check 2&ndash;3 rows to compare side-by-side.</p>
+  </section>
+  <section id="view-anchors" hidden>
+    <div class="panel">
+      <h2>Fit Anchors Calibration Set</h2>
+      <p class="muted">Tokenised protocols used to fit the log-log hierarchical valuation model. <b>Note:</b> the dashboard carries a TVL-spread sample of the fit anchors as anonymized <code>[tvl, actual_mcap, predicted_mcap]</code> triples; full anchor identities are recorded in <code>board.json</code>&rsquo;s <code>model_report</code>.</p>
+      <div class="anch-top">
+        <div class="anch-stats" id="anchStats"></div>
+        <div class="anch-svg" id="anchScatter"></div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th class="num">#</th><th class="num">TVL</th><th class="num">Actual Mcap</th><th class="num">Predicted Mcap</th><th class="num">Pred / Actual</th><th class="num">Within 2&times;</th></tr></thead>
+          <tbody id="anchRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  <section id="view-audit" hidden>
+    <div class="panel">
+      <h2>Snapshot Reconciliation Audit</h2>
+      <p class="muted">Complete partition of the DefiLlama snapshot verifying 100% coverage and zero token-leakage onto the pre-token board.</p>
+      <div class="audit-cards" id="auditCards"></div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Bucket</th><th class="num">Count</th><th class="num">Share</th><th>Status</th><th>Explanation</th></tr></thead>
+          <tbody id="auditRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
 </main>
-
 <div class="overlay" id="overlay" hidden>
-  <section class="detail" id="detail" role="dialog" aria-modal="true" aria-label="Protocol detail"></section>
+  <section class="detail" id="detail" role="dialog" aria-modal="true" aria-label="Detail view"></section>
 </div>
-
 <footer>
-  <p>Implied values are this radar's own claim, computed from the snapshot — not a prediction of whether or when a token launches. Snapshot source: DefiLlama protocols data, as of the date above.</p>
+  <p>Implied values are this radar&rsquo;s own claim, computed from the snapshot &mdash; not a prediction of whether or when a token launches. Snapshot source: DefiLlama protocols data, as of the date above.</p>
 </footer>
-<script src="data.js"></script>
+<script src="z-data.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
