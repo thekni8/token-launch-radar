@@ -1,167 +1,181 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LaunchLens — Token Launch Radar</title>
-<link rel="stylesheet" href="app.css">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LaunchLens — Token Launch Radar</title>
+    <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <header>
-  <div class="mast">
-    <div>
-      <h1>LaunchLens</h1>
-      <p class="tag">Protocols recording no token ranked by expected circulating value (value-if-launches &times; launch odds) &amp; deposit-sized farm economics.</p>
+    <div class="mast">
+        <div>
+            <h1>LaunchLens</h1>
+            <p class="tag">Protocols recording no token ranked by expected circulating value (value-if-launches &times; launch odds) &amp; deposit-sized farm economics.</p>
+        </div>
+        <div class="meta" id="meta"></div>
     </div>
-    <div class="meta" id="meta"></div>
-  </div>
-  <section class="kpis" id="kpis" aria-label="Key metrics"></section>
-  <nav class="tabs" id="tabs" aria-label="Views">
-    <button class="tab active" data-tab="board">Ranked Board</button>
-    <button class="tab" data-tab="anchors">Fit Anchors</button>
-    <button class="tab" data-tab="audit">Snapshot Audit</button>
-  </nav>
+    <section class="kpis" id="kpis" aria-label="Key metrics"></section>
+    <nav class="tabs" id="tabs" aria-label="Views">
+        <button class="tab active" data-tab="board">Ranked Board</button>
+        <button class="tab" data-tab="anchors">Fit Anchors</button>
+        <button class="tab" data-tab="audit">Snapshot Audit</button>
+    </nav>
 </header>
 <main>
-  <section id="view-board">
-    <details class="how" id="how">
-      <summary>Model formula, LOO validation, ablation, range calibration &amp; launch odds <span class="sum-note" id="mdlSummary"></span></summary>
-      <div class="mdl-body">
-        <div class="mdl-top">
-          <div class="mdl-exp" id="mdlNarrative"></div>
-          <div class="mdl-scatter">
-            <h4>Predicted vs Actual Market Cap (Fit Anchors, log-log)</h4>
-            <div id="mdlScatter"></div>
-          </div>
-        </div>
-        <div class="mdl-grid">
-          <div>
-            <h4>Validation: 125-Refit LOO, 5-Fold CV &amp; Holdout</h4>
-            <table class="mini-tbl">
-              <thead><tr><th>Evaluation Set</th><th class="num">N</th><th class="num">Med Miss</th><th class="num">MdAPE</th><th class="num">&le;2&times;</th><th class="num">&le;3&times;</th><th class="num">&rho;</th></tr></thead>
-              <tbody id="mdlCv"></tbody>
-            </table>
-            <h4 class="mt">Range Calibration (OOB 250 Bootstrap Refits)</h4>
-            <div class="cal-box" id="mdlCal"></div>
-          </div>
-          <div>
-            <h4>Stepwise Ablation (All Held-Out via LOO)</h4>
-            <table class="mini-tbl">
-              <thead><tr><th>Model Step</th><th class="num">Med Miss</th><th class="num">MdAPE</th><th class="num">&le;2&times;</th><th class="num">&le;3&times;</th><th>Status</th></tr></thead>
-              <tbody id="mdlAbl"></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="mdl-grid">
-          <div>
-            <h4>Launch Odds Model (Age Band + Category, LOO-Validated)</h4>
-            <div class="lo-meta" id="mdlLoMeta"></div>
-            <table class="mini-tbl">
-              <thead><tr><th>Age Band</th><th class="num">Protocols</th><th class="num">Tokenised</th><th class="num">Share</th></tr></thead>
-              <tbody id="mdlLoBands"></tbody>
-            </table>
-            <p class="caveat" id="mdlLoCaveat"></p>
-          </div>
-          <div>
-            <h4>Per-Category Hierarchical Value Offsets</h4>
-            <div class="catf-wrap">
-              <table class="mini-tbl">
-                <thead><tr><th>Category</th><th class="num">Anchors</th><th class="num">Log Offset</th><th class="num">Mult</th><th class="num">Shrinkage</th></tr></thead>
-                <tbody id="mdlCats"></tbody>
-              </table>
+    <section id="view-board">
+        <details class="how" id="how">
+            <summary>Model formula, LOO validation, ablation, range calibration &amp; launch odds <span class="sum-note" id="mdlSummary"></span></summary>
+            <div class="mdl-body">
+                <div class="mdl-top">
+                    <div class="mdl-exp" id="mdlNarrative"></div>
+                    <div class="mdl-scatter">
+                        <h4>Predicted vs Actual Market Cap (Fit Anchors, log-log)</h4>
+                        <div id="mdlScatter"></div>
+                    </div>
+                </div>
+                <div class="mdl-grid">
+                    <div>
+                        <h4>Validation: 125-Refit LOO, 5-Fold CV &amp; Holdout</h4>
+                        <table class="mini-tbl">
+                            <thead>
+                                <tr><th>Evaluation Set</th><th class="num">N</th><th class="num">Med Miss</th><th class="num">MdAPE</th><th class="num">&le;2&times;</th><th class="num">&le;3&times;</th><th class="num">&rho;</th></tr>
+                            </thead>
+                            <tbody id="mdlCv"></tbody>
+                        </table>
+                        <h4 class="mt">Range Calibration (OOB 250 Bootstrap Refits)</h4>
+                        <div class="cal-box" id="mdlCal"></div>
+                    </div>
+                    <div>
+                        <h4>Stepwise Ablation (All Held-Out via LOO)</h4>
+                        <table class="mini-tbl">
+                            <thead>
+                                <tr><th>Model Step</th><th class="num">Med Miss</th><th class="num">MdAPE</th><th class="num">&le;2&times;</th><th class="num">&le;3&times;</th><th>Status</th></tr>
+                            </thead>
+                            <tbody id="mdlAbl"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="mdl-grid">
+                    <div>
+                        <h4>Launch Odds Model (Age Band + Category, LOO-Validated)</h4>
+                        <div class="lo-meta" id="mdlLoMeta"></div>
+                        <table class="mini-tbl">
+                            <thead>
+                                <tr><th>Age Band</th><th class="num">Protocols</th><th class="num">Tokenised</th><th class="num">Share</th></tr>
+                            </thead>
+                            <tbody id="mdlLoBands"></tbody>
+                        </table>
+                        <p class="caveat" id="mdlLoCaveat"></p>
+                    </div>
+                    <div>
+                        <h4>Per-Category Hierarchical Value Offsets</h4>
+                        <div class="catf-wrap">
+                            <table class="mini-tbl">
+                                <thead>
+                                    <tr><th>Category</th><th class="num">Anchors</th><th class="num">Log Offset</th><th class="num">Mult</th><th class="num">Shrinkage</th></tr>
+                                </thead>
+                                <tbody id="mdlCats"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
             </div>
-          </div>
+        </details>
+        <section class="sandbox" aria-label="Farm economics sandbox">
+            <div class="sb-controls">
+                <label class="wl"><input id="sbAuto" type="checkbox" checked> Auto-size plan deposit</label>
+                <label>Sandbox deposit $ <input class="ctl" id="sbDep" type="number" min="1" step="100" value="1000"></label>
+                <label>Holding days <input class="ctl" id="sbDays" type="number" min="1" max="730" step="15" value="90"></label>
+                <label>Airdrop pool %
+                    <select class="ctl" id="sbPool">
+                        <option value="5">Conservative (5%)</option>
+                        <option value="8" selected>Base (8%)</option>
+                        <option value="12">Bull (12%)</option>
+                    </select>
+                </label>
+            </div>
+            <p class="sb-formula">Gross = Expected Value &times; Pool% &times; [Deposit / (TVL + Deposit)] &times; (Days / 90) &middot; Net = Gross &minus; Round-trip Fees &middot; Auto-size maximizes net USD per protocol over the $100&ndash;$50k grid (capped at 0.05% TVL) &middot; FARM if Net &ge; $50 &amp; ROI &ge; 5%, THIN if Net &gt; $0, else SKIP.</p>
+        </section>
+        <div class="cmp-bar" id="cmpBar" hidden>
+            <span>Compare (<b id="cmpCnt">0</b>/3): <span id="cmpList"></span></span>
+            <span class="cmp-actions">
+                <button class="btn primary" id="cmpGo">Compare Selected</button>
+                <button class="btn" id="cmpClr">Clear</button>
+            </span>
         </div>
-      </div>
-    </details>
-    <section class="sandbox" aria-label="Farm economics sandbox">
-      <div class="sb-controls">
-        <label class="wl"><input id="sbAuto" type="checkbox" checked> Auto-size plan deposit</label>
-        <label>Sandbox deposit $ <input class="ctl" id="sbDep" type="number" min="1" step="100" value="1000"></label>
-        <label>Holding days <input class="ctl" id="sbDays" type="number" min="1" max="730" step="15" value="90"></label>
-        <label>Airdrop pool %
-          <select class="ctl" id="sbPool">
-            <option value="5">Conservative (5%)</option>
-            <option value="8" selected>Base (8%)</option>
-            <option value="12">Bull (12%)</option>
-          </select>
-        </label>
-      </div>
-      <p class="sb-formula">Gross = Expected Value &times; Pool% &times; [Deposit / (TVL + Deposit)] &times; (Days / 90) &middot; Net = Gross &minus; Round-trip Fees &middot; Auto-size maximizes net USD per protocol over the $100&ndash;$50k grid (capped at 0.05% TVL) &middot; FARM if Net &ge; $50 &amp; ROI &ge; 5%, THIN if Net &gt; $0, else SKIP.</p>
+        <div class="filters">
+            <input class="ctl" id="q" type="search" placeholder="Search name or slug" aria-label="Search name or slug">
+            <select class="ctl" id="cat" aria-label="Category"><option value="">All categories</option></select>
+            <select class="ctl" id="chain" aria-label="Chain"><option value="">All chains</option></select>
+            <select class="ctl" id="verd" aria-label="Verdict"><option value="">All verdicts</option><option value="2">FARM</option><option value="1">THIN</option><option value="0">SKIP</option></select>
+            <label class="min">Min TVL $ <input class="ctl" id="mintvl" type="number" min="0" step="1000000" placeholder="0"></label>
+            <label class="wl"><input id="wl" type="checkbox"> Watchlist only</label>
+            <button class="btn" id="rstBtn" type="button">Reset</button>
+            <button class="btn primary" id="expBtn" type="button">Export CSV</button>
+            <span class="count" id="count"></span>
+        </div>
+        <div class="tbl-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th class="chk-col" title="Select 2-3 to compare">Cmp</th>
+                        <th><button data-sort="rank">Rank</button></th>
+                        <th>Protocol</th>
+                        <th>Category</th>
+                        <th>Chains</th>
+                        <th class="num"><button data-sort="tvl">TVL</button></th>
+                        <th class="num"><button data-sort="val">If Launches</button></th>
+                        <th class="num"><button data-sort="odds">Launch Odds</button></th>
+                        <th class="num"><button data-sort="implied">Expected Value</button></th>
+                        <th class="num"><button data-sort="net">Plan / Net / Verdict</button></th>
+                        <th class="num"><button data-sort="age">Age</button></th>
+                    </tr>
+                </thead>
+                <tbody id="rows"></tbody>
+            </table>
+        </div>
+        <p class="hint">Click any row for its tenure cohort, value &amp; expected-value bands, deposit-sized farm plan, and kinship check. Check 2&ndash;3 rows to compare side-by-side.</p>
     </section>
-    <div class="cmp-bar" id="cmpBar" hidden>
-      <span>Compare (<b id="cmpCnt">0</b>/3): <span id="cmpList"></span></span>
-      <span class="cmp-actions">
-        <button class="btn primary" id="cmpGo">Compare Selected</button>
-        <button class="btn" id="cmpClr">Clear</button>
-      </span>
-    </div>
-    <div class="filters">
-      <input class="ctl" id="q" type="search" placeholder="Search name or slug" aria-label="Search name or slug">
-      <select class="ctl" id="cat" aria-label="Category"><option value="">All categories</option></select>
-      <select class="ctl" id="chain" aria-label="Chain"><option value="">All chains</option></select>
-      <select class="ctl" id="verd" aria-label="Verdict"><option value="">All verdicts</option><option value="2">FARM</option><option value="1">THIN</option><option value="0">SKIP</option></select>
-      <label class="min">Min TVL $ <input class="ctl" id="mintvl" type="number" min="0" step="1000000" placeholder="0"></label>
-      <label class="wl"><input id="wl" type="checkbox"> Watchlist only</label>
-      <button class="btn" id="rstBtn" type="button">Reset</button>
-      <button class="btn primary" id="expBtn" type="button">Export CSV</button>
-      <span class="count" id="count"></span>
-    </div>
-    <div class="tbl-wrap">
-      <table>
-        <thead><tr>
-          <th class="chk-col" title="Select 2-3 to compare">Cmp</th>
-          <th><button data-sort="rank">Rank</button></th>
-          <th>Protocol</th>
-          <th>Category</th>
-          <th>Chains</th>
-          <th class="num"><button data-sort="tvl">TVL</button></th>
-          <th class="num"><button data-sort="val">If Launches</button></th>
-          <th class="num"><button data-sort="odds">Launch Odds</button></th>
-          <th class="num"><button data-sort="implied">Expected Value</button></th>
-          <th class="num"><button data-sort="net">Plan / Net / Verdict</button></th>
-          <th class="num"><button data-sort="age">Age</button></th>
-        </tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
-    <p class="hint">Click any row for its tenure cohort, value &amp; expected-value bands, deposit-sized farm plan, and kinship check. Check 2&ndash;3 rows to compare side-by-side.</p>
-  </section>
-  <section id="view-anchors" hidden>
-    <div class="panel">
-      <h2>Fit Anchors Calibration Set</h2>
-      <p class="muted">Tokenised protocols used to calibrate the log-log valuation model. The dashboard carries a TVL-spread sample of <code>[tvl, actual_mcap, full_pred, loo_pred]</code>; full anchor identities live in <code>board.json</code>&rsquo;s <code>model_report</code>.</p>
-      <div class="anch-top">
-        <div class="anch-stats" id="anchStats"></div>
-        <div class="anch-svg" id="anchScatter"></div>
-      </div>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr><th class="num">#</th><th class="num">TVL</th><th class="num">Actual Mcap</th><th class="num">Full Pred</th><th class="num">LOO Pred</th><th class="num">LOO / Actual</th><th class="num">&le;2&times;</th></tr></thead>
-          <tbody id="anchRows"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-  <section id="view-audit" hidden>
-    <div class="panel">
-      <h2>Snapshot Reconciliation Audit (Granular Partition)</h2>
-      <p class="muted">Complete mutually exclusive partition of all snapshot protocols verifying 100% coverage and zero token leakage onto the board. Every bucket&rsquo;s slugs are inspectable below; protocols on the board record no token.</p>
-      <div class="audit-cards" id="auditCards"></div>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr><th>Bucket</th><th class="num">Count</th><th class="num">Share</th><th>Group</th><th>Inspect Slugs</th></tr></thead>
-          <tbody id="auditRows"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
+    <section id="view-anchors" hidden>
+        <div class="panel">
+            <h2>Fit Anchors Calibration Set</h2>
+            <p class="muted">Tokenised protocols used to calibrate the log-log valuation model. The dashboard carries a TVL-spread sample of <code>[tvl, actual_mcap, full_pred, loo_pred]</code>; full anchor identities live in <code>board.json</code>&rsquo;s <code>model_report</code>.</p>
+            <div class="anch-top">
+                <div class="anch-stats" id="anchStats"></div>
+                <div class="anch-svg" id="anchScatter"></div>
+            </div>
+            <div class="tbl-wrap">
+                <table>
+                    <thead>
+                        <tr><th class="num">#</th><th class="num">TVL</th><th class="num">Actual Mcap</th><th class="num">Full Pred</th><th class="num">LOO Pred</th><th class="num">LOO / Actual</th><th class="num">&le;2&times;</th></tr>
+                    </thead>
+                    <tbody id="anchRows"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+    <section id="view-audit" hidden>
+        <div class="panel">
+            <h2>Snapshot Reconciliation Audit (Granular Partition)</h2>
+            <p class="muted">Complete mutually exclusive partition of all snapshot protocols verifying 100% coverage and zero token leakage onto the board. Every bucket&rsquo;s slugs are inspectable below; protocols on the board record no token.</p>
+            <div class="audit-cards" id="auditCards"></div>
+            <div class="tbl-wrap">
+                <table>
+                    <thead>
+                        <tr><th>Bucket</th><th class="num">Count</th><th class="num">Share</th><th>Group</th><th>Inspect Slugs</th></tr>
+                    </thead>
+                    <tbody id="auditRows"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
 </main>
 <div class="overlay" id="overlay" hidden>
-  <section class="detail" id="detail" role="dialog" aria-modal="true" aria-label="Detail view"></section>
+    <section class="detail" id="detail" role="dialog" aria-modal="true" aria-label="Detail view"></section>
 </div>
 <footer>
-  <p>Expected values are this radar&rsquo;s own snapshot estimate (value-if-launches &times; cohort launch odds) &mdash; not a prediction of whether or when any protocol launches a token. A protocol listed here records no token in the DefiLlama snapshot as of the date above.</p>
+    <p>Expected values are this radar&rsquo;s own snapshot estimate (value-if-launches &times; cohort launch odds) &mdash; not a prediction of whether or when any protocol launches a token. A protocol listed here records no token in the DefiLlama snapshot as of the date above.</p>
 </footer>
 <script src="z-data.js"></script>
 <script src="app.js"></script>
