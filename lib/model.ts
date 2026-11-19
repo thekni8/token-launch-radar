@@ -1,5 +1,6 @@
-// LaunchLens value model: Implied Circulating Market Cap.
+// LaunchLens value & launch-odds model: Expected Implied Circulating Market Cap.
 //
+// 1. Value model (value-if-launches):
 // Calibrates a unified log-log hierarchical OLS model from the snapshot's own
 // tokenized protocols (those recording positive TVL, positive circulating
 // market cap, and both a CoinGecko id and ticker):
@@ -9,7 +10,16 @@
 //   effect_c = w_c * meanResidual_c,  w_c = n_c / (n_c + 8).
 // Growth and age covariates are included only if 5-fold cross-validation proves
 // they reduce out-of-sample MdAPE. The exact fitted model that wins CV
-// generates the board and is evaluated out-of-sample.
+// generates the board and is evaluated out-of-sample via 5-fold CV, LOO (125
+// refits), newest-listed holdout, ablation, and OOB range calibration.
+//
+// 2. Launch-odds model (M1):
+// Empirical P(launch) = share of protocols in the same (age band + category)
+// cohort that already record a token, shrunk toward the global base rate
+// (tokenized / total) by cohort size n / (n + k) (k = 10 for dated cohorts;
+// category-only with k = 20 for undated protocols). Validated by LOO across
+// all protocols in the snapshot. Board ranks by expected value:
+//   implied_value_usd = value_if_launches * P(launch).
 //
 // Float caveat: mcap_usd is CIRCULATING market cap, not FDV. A newly launched
 // token's circulating float at launch is typically well below 100%, so the
@@ -37,34 +47,144 @@ export interface Snapshot {
   watchlist: string[];
 }
 
+export interface LaunchOddsDetail {
+  probability: number;
+  ageBand: string;
+  category: string;
+  cohortN: number;
+  cohortTokenized: number;
+  weight: number;
+  baseRate: number;
+}
+
 export interface ScoredProtocol {
   protocol: Protocol;
+  /** Expected value = round(valueIfLaunchUsd * launchOdds), non-increasing with rank. */
   impliedUsd: number;
+  /** P10 of expected value across 250 bootstrap refits. */
   impliedLowUsd: number;
+  /** P90 of expected value across 250 bootstrap refits. */
   impliedHighUsd: number;
+  /** P25 of expected value across 250 bootstrap refits. */
+  impliedP25Usd: number;
+  /** P75 of expected value across 250 bootstrap refits. */
+  impliedP75Usd: number;
+  /** Value if the protocol launches (before multiplying by launchOdds). */
+  valueIfLaunchUsd: number;
+  valueIfLaunchP10Usd: number;
+  valueIfLaunchP25Usd: number;
+  valueIfLaunchP75Usd: number;
+  valueIfLaunchP90Usd: number;
+  /** Empirical cohort launch probability in [0, 1]. */
+  launchOdds: number;
+  launchCohort: LaunchOddsDetail;
   rankLow: number;
   rankHigh: number;
   watchlist: boolean;
   ageDays: number | null;
-  breakdown: { baseUsd: number; categoryFactor: number; growthFactor: number; ageFactor: number; elasticity: number };
+  breakdown: {
+    baseUsd: number;
+    categoryFactor: number;
+    growthFactor: number;
+    ageFactor: number;
+    elasticity: number;
+  };
+}
+
+export interface LooMetrics {
+  n: number;
+  mdape: number;
+  medianMiss: number;
+  hit2x: number;
+  hit3x: number;
+  spearman: number;
+}
+
+export interface RangeCalibrationReport {
+  n: number;
+  p25p75Hits: number;
+  p25p75Rate: number;
+  p10p90Hits: number;
+  p10p90Rate: number;
+  method: string;
+}
+
+export interface AblationStep {
+  id: string;
+  label: string;
+  n: number;
+  mdape: number;
+  medianMiss: number;
+  hit2x: number;
+  hit3x: number;
+  selected: boolean;
+  status: 'baseline' | 'kept' | 'dropped' | 'selected';
+}
+
+export interface LaunchOddsReport {
+  total: number;
+  tokenized: number;
+  baseRate: number;
+  shrinkageK: number;
+  undatedShrinkageK: number;
+  looCorrect: number;
+  looAccuracy: number;
+  baseCorrect: number;
+  baseAccuracy: number;
+  ageCutoffsDays: number[];
+  ageBands: Array<{ label: string; n: number; tokenized: number; rate: number }>;
 }
 
 export interface ModelReport {
-  fitN: number; outliersDropped: number;
-  elasticity: number; intercept: number;
-  growthCoef: number | null; ageCoef: number | null;
-  growthKept: boolean; ageKept: boolean;
+  fitN: number;
+  outliersDropped: number;
+  elasticity: number;
+  intercept: number;
+  growthCoef: number | null;
+  ageCoef: number | null;
+  growthKept: boolean;
+  ageKept: boolean;
   cv: { mdape: number; hit2x: number; spearman: number; n: number };
   cvBig: { mdape: number; hit2x: number; spearman: number; n: number };
   baseline: { mdape: number; hit2x: number; spearman: number };
   newestHoldout: { mdape: number; hit2x: number; n: number };
+  loo: LooMetrics;
+  rangeCalibration: RangeCalibrationReport;
+  ablation: AblationStep[];
+  launchOdds: LaunchOddsReport;
   categories: Array<{ name: string; n: number; intercept: number; weight: number }>;
-  anchors: Array<{ slug: string; name: string; category: string; tvl: number; actual: number; predicted: number }>;
+  anchors: Array<{
+    slug: string;
+    name: string;
+    category: string;
+    tvl: number;
+    actual: number;
+    predicted: number;
+    looPredicted: number;
+  }>;
 }
 
-export interface Partition { watchlist: number; belowFloor: number; anchorsFit: number; anchorsOutliers: number; excludedWrapped: number; excludedPartial: number; total: number; }
+export interface Partition {
+  watchlist: number;
+  belowFloor: number;
+  anchorsFit: number;
+  anchorsOutliers: number;
+  excludedWrapped: number;
+  excludedPartial: number;
+  total: number;
+}
 
-export interface FittedModel { report: ModelReport; partition: Partition; predict(p: Protocol): number; breakdown(p: Protocol): ScoredProtocol['breakdown']; }
+export interface FittedModel {
+  report: ModelReport;
+  partition: Partition;
+  /** Predicts value-if-launches (circulating market cap USD). */
+  predict(p: Protocol): number;
+  /** Predicts expected value = round(predict(p) * launchOdds(p).probability). */
+  expectedValue(p: Protocol): number;
+  /** Empirical cohort launch probability and cohort metadata. */
+  launchOdds(p: Protocol): LaunchOddsDetail;
+  breakdown(p: Protocol): ScoredProtocol['breakdown'];
+}
 
 /** A protocol records no token when DefiLlama records neither a CoinGecko id nor a ticker. */
 export function isPreToken(p: Protocol): boolean {
@@ -95,6 +215,8 @@ export function daysBetween(from: string, to: string): number {
 }
 
 const CATEGORY_SHRINKAGE_K = 8;
+const LAUNCH_COHORT_SHRINKAGE_K = 10;
+const LAUNCH_UNDATED_SHRINKAGE_K = 20;
 const OUTLIER_ROBUST_SD = 3;
 const MAD_NORMAL_SCALE = 1.4826;
 const BIG_TVL_THRESHOLD = 10_000_000;
@@ -109,6 +231,18 @@ interface ModelParams {
   categoryEffects: Map<string, number>;
   categoryCounts: Map<string, number>;
   categoryWeights: Map<string, number>;
+}
+
+interface LaunchOddsModel {
+  baseRate: number;
+  total: number;
+  tokenized: number;
+  cutoffs: number[];
+  bandLabels: string[];
+  cohortCounts: Map<string, { n: number; tokenized: number }>;
+  categoryCounts: Map<string, { n: number; tokenized: number }>;
+  report: LaunchOddsReport;
+  predict(p: Protocol): LaunchOddsDetail;
 }
 
 const bootstrapStore = new WeakMap<FittedModel, { asOf: string; paramsList: ModelParams[] }>();
@@ -197,6 +331,7 @@ function fitParams(
   asOf: string,
   useGrowth: boolean,
   useAge: boolean,
+  useCategory = true,
 ): ModelParams {
   const n = anchors.length;
   if (n === 0) {
@@ -261,28 +396,31 @@ function fitParams(
   const growthCoef = useGrowth ? slopes[idx++]! : null;
   const ageCoef = useAge ? slopes[idx++]! : null;
 
-  const residualSums = new Map<string, number>();
-  const categoryCounts = new Map<string, number>();
-  for (let i = 0; i < n; i++) {
-    const a = anchors[i]!;
-    const row = X[i]!;
-    let predLog = intercept + elasticity * row[0]!;
-    let cIdx = 1;
-    if (growthCoef !== null) predLog += growthCoef * row[cIdx++]!;
-    if (ageCoef !== null) predLog += ageCoef * row[cIdx++]!;
-    const residual = y[i]! - predLog;
-    const cat = a.category ?? 'Uncategorized';
-    residualSums.set(cat, (residualSums.get(cat) ?? 0) + residual);
-    categoryCounts.set(cat, (categoryCounts.get(cat) ?? 0) + 1);
-  }
-
   const categoryEffects = new Map<string, number>();
+  const categoryCounts = new Map<string, number>();
   const categoryWeights = new Map<string, number>();
-  for (const [cat, cnt] of categoryCounts.entries()) {
-    const meanRes = residualSums.get(cat)! / cnt;
-    const w = cnt / (cnt + CATEGORY_SHRINKAGE_K);
-    categoryWeights.set(cat, w);
-    categoryEffects.set(cat, w * meanRes);
+
+  if (useCategory) {
+    const residualSums = new Map<string, number>();
+    for (let i = 0; i < n; i++) {
+      const a = anchors[i]!;
+      const row = X[i]!;
+      let predLog = intercept + elasticity * row[0]!;
+      let cIdx = 1;
+      if (growthCoef !== null) predLog += growthCoef * row[cIdx++]!;
+      if (ageCoef !== null) predLog += ageCoef * row[cIdx++]!;
+      const residual = y[i]! - predLog;
+      const cat = a.category ?? 'Uncategorized';
+      residualSums.set(cat, (residualSums.get(cat) ?? 0) + residual);
+      categoryCounts.set(cat, (categoryCounts.get(cat) ?? 0) + 1);
+    }
+
+    for (const [cat, cnt] of categoryCounts.entries()) {
+      const meanRes = residualSums.get(cat)! / cnt;
+      const w = cnt / (cnt + CATEGORY_SHRINKAGE_K);
+      categoryWeights.set(cat, w);
+      categoryEffects.set(cat, w * meanRes);
+    }
   }
 
   return {
@@ -374,20 +512,27 @@ function spearmanCorr(actuals: number[], preds: number[]): number {
 function evaluateMetrics(
   actuals: number[],
   preds: number[],
-): { mdape: number; hit2x: number; spearman: number; n: number } {
+): { mdape: number; medianMiss: number; hit2x: number; hit3x: number; spearman: number; n: number } {
   const n = actuals.length;
-  if (n === 0) return { mdape: 0, hit2x: 0, spearman: 0, n: 0 };
+  if (n === 0) return { mdape: 0, medianMiss: 1, hit2x: 0, hit3x: 0, spearman: 0, n: 0 };
   const apes = new Array<number>(n);
-  let hits = 0;
+  const misses = new Array<number>(n);
+  let hits2 = 0;
+  let hits3 = 0;
   for (let i = 0; i < n; i++) {
     const a = actuals[i]!;
     const p = preds[i]!;
     apes[i] = Math.abs(p - a) / a;
-    if (p <= 2 * a && a <= 2 * p) hits++;
+    const ratio = p >= a ? p / a : a / p;
+    misses[i] = ratio;
+    if (ratio <= 2) hits2++;
+    if (ratio <= 3) hits3++;
   }
   return {
     mdape: median(apes),
-    hit2x: hits / n,
+    medianMiss: median(misses),
+    hit2x: hits2 / n,
+    hit3x: hits3 / n,
     spearman: spearmanCorr(actuals, preds),
     n,
   };
@@ -417,7 +562,7 @@ function runFiveFoldCv(
     }
     if (testIdx.length === 0 || train.length === 0) continue;
 
-    const foldParams = fitParams(train, asOf, useGrowth, useAge);
+    const foldParams = fitParams(train, asOf, useGrowth, useAge, true);
     const trainRatios = train.map((a) => a.mcap_usd! / a.tvl_usd);
     const globalMedianMultiple = median(trainRatios);
 
@@ -429,7 +574,7 @@ function runFiveFoldCv(
     }
   }
 
-  const cv = evaluateMetrics(actuals, modelPreds);
+  const cvFull = evaluateMetrics(actuals, modelPreds);
   const baseAll = evaluateMetrics(actuals, basePreds);
 
   const bigActuals: number[] = [];
@@ -440,12 +585,251 @@ function runFiveFoldCv(
       bigPreds.push(modelPreds[i]!);
     }
   }
-  const cvBig = evaluateMetrics(bigActuals, bigPreds);
+  const cvBigFull = evaluateMetrics(bigActuals, bigPreds);
 
   return {
-    cv,
-    cvBig,
+    cv: { mdape: cvFull.mdape, hit2x: cvFull.hit2x, spearman: cvFull.spearman, n: cvFull.n },
+    cvBig: {
+      mdape: cvBigFull.mdape,
+      hit2x: cvBigFull.hit2x,
+      spearman: cvBigFull.spearman,
+      n: cvBigFull.n,
+    },
     baseline: { mdape: baseAll.mdape, hit2x: baseAll.hit2x, spearman: baseAll.spearman },
+  };
+}
+
+/** Leave-one-out validation (M2) for any OLS specification. */
+function runLooOls(
+  anchors: Protocol[],
+  asOf: string,
+  useCategory: boolean,
+  useGrowth: boolean,
+  useAge: boolean,
+): { metrics: LooMetrics; preds: number[] } {
+  const n = anchors.length;
+  const actuals = new Array<number>(n);
+  const preds = new Array<number>(n);
+
+  for (let i = 0; i < n; i++) {
+    const train: Protocol[] = [];
+    for (let j = 0; j < n; j++) {
+      if (j !== i) train.push(anchors[j]!);
+    }
+    const target = anchors[i]!;
+    actuals[i] = target.mcap_usd!;
+    const params = fitParams(train, asOf, useGrowth, useAge, useCategory);
+    preds[i] = predictRounded(target, params, asOf);
+  }
+
+  const m = evaluateMetrics(actuals, preds);
+  return {
+    metrics: {
+      n: m.n,
+      mdape: m.mdape,
+      medianMiss: m.medianMiss,
+      hit2x: m.hit2x,
+      hit3x: m.hit3x,
+      spearman: m.spearman,
+    },
+    preds,
+  };
+}
+
+/** Leave-one-out validation for the flat global-median-multiple baseline (M4). */
+function runLooFlatMultiple(anchors: Protocol[]): LooMetrics {
+  const n = anchors.length;
+  const actuals = new Array<number>(n);
+  const preds = new Array<number>(n);
+
+  for (let i = 0; i < n; i++) {
+    const ratios: number[] = [];
+    for (let j = 0; j < n; j++) {
+      if (j !== i) ratios.push(anchors[j]!.mcap_usd! / anchors[j]!.tvl_usd);
+    }
+    const target = anchors[i]!;
+    actuals[i] = target.mcap_usd!;
+    const mult = median(ratios);
+    preds[i] = Math.max(1, Math.round(target.tvl_usd * mult));
+  }
+
+  const m = evaluateMetrics(actuals, preds);
+  return {
+    n: m.n,
+    mdape: m.mdape,
+    medianMiss: m.medianMiss,
+    hit2x: m.hit2x,
+    hit3x: m.hit3x,
+    spearman: m.spearman,
+  };
+}
+
+/** Empirical launch-odds model (M1): age-band + category cohorts shrunk to global base rate, LOO-validated. */
+function fitLaunchOddsModel(snapshot: Snapshot): LaunchOddsModel {
+  const protocols = snapshot.protocols;
+  const total = protocols.length;
+  let tokenized = 0;
+  const datedAges: number[] = [];
+
+  for (const p of protocols) {
+    if (!isPreToken(p)) tokenized++;
+    if (p.listed_at !== null) {
+      datedAges.push(daysBetween(p.listed_at, snapshot.as_of));
+    }
+  }
+
+  const baseRate = total > 0 ? tokenized / total : 0.5;
+  datedAges.sort((a, b) => a - b);
+
+  // Quintile cutoffs (Q20, Q40, Q60, Q80) among dated protocols.
+  const cutoffs =
+    datedAges.length >= 5
+      ? [
+          Math.round(quantile(datedAges, 0.2)),
+          Math.round(quantile(datedAges, 0.4)),
+          Math.round(quantile(datedAges, 0.6)),
+          Math.round(quantile(datedAges, 0.8)),
+        ]
+      : [180, 365, 730, 1095];
+
+  const bandLabels = [
+    `<${cutoffs[0]!}d`,
+    `${cutoffs[0]!}–${cutoffs[1]! - 1}d`,
+    `${cutoffs[1]!}–${cutoffs[2]! - 1}d`,
+    `${cutoffs[2]!}–${cutoffs[3]! - 1}d`,
+    `>=${cutoffs[3]!}d`,
+  ];
+
+  const getAgeBand = (p: Protocol): string => {
+    if (p.listed_at === null) return 'Undated';
+    const d = daysBetween(p.listed_at, snapshot.as_of);
+    if (d < cutoffs[0]!) return bandLabels[0]!;
+    if (d < cutoffs[1]!) return bandLabels[1]!;
+    if (d < cutoffs[2]!) return bandLabels[2]!;
+    if (d < cutoffs[3]!) return bandLabels[3]!;
+    return bandLabels[4]!;
+  };
+
+  const cohortCounts = new Map<string, { n: number; tokenized: number }>();
+  const categoryCounts = new Map<string, { n: number; tokenized: number }>();
+  const bandCounts = new Map<string, { n: number; tokenized: number }>();
+
+  for (const p of protocols) {
+    const isTok = !isPreToken(p) ? 1 : 0;
+    const band = getAgeBand(p);
+    const cat = p.category ?? 'Uncategorized';
+    const key = `${band}||${cat}`;
+
+    const cEntry = cohortCounts.get(key) ?? { n: 0, tokenized: 0 };
+    cEntry.n += 1;
+    cEntry.tokenized += isTok;
+    cohortCounts.set(key, cEntry);
+
+    const catEntry = categoryCounts.get(cat) ?? { n: 0, tokenized: 0 };
+    catEntry.n += 1;
+    catEntry.tokenized += isTok;
+    categoryCounts.set(cat, catEntry);
+
+    const bEntry = bandCounts.get(band) ?? { n: 0, tokenized: 0 };
+    bEntry.n += 1;
+    bEntry.tokenized += isTok;
+    bandCounts.set(band, bEntry);
+  }
+
+  const predictWithExclusion = (p: Protocol, excludeSelf: boolean): LaunchOddsDetail => {
+    const isTok = !isPreToken(p) ? 1 : 0;
+    const band = getAgeBand(p);
+    const cat = p.category ?? 'Uncategorized';
+    const adjTotal = excludeSelf ? Math.max(1, total - 1) : Math.max(1, total);
+    const adjTok = excludeSelf ? tokenized - isTok : tokenized;
+    const adjBaseRate = adjTok / adjTotal;
+
+    if (band === 'Undated') {
+      const raw = categoryCounts.get(cat) ?? { n: 0, tokenized: 0 };
+      const n = Math.max(0, raw.n - (excludeSelf ? 1 : 0));
+      const tok = Math.max(0, raw.tokenized - (excludeSelf ? isTok : 0));
+      const w = n / (n + LAUNCH_UNDATED_SHRINKAGE_K);
+      const empRate = n > 0 ? tok / n : adjBaseRate;
+      const prob = w * empRate + (1 - w) * adjBaseRate;
+      return {
+        probability: Math.max(0.01, Math.min(0.99, prob)),
+        ageBand: band,
+        category: cat,
+        cohortN: n,
+        cohortTokenized: tok,
+        weight: w,
+        baseRate: adjBaseRate,
+      };
+    }
+
+    const key = `${band}||${cat}`;
+    const raw = cohortCounts.get(key) ?? { n: 0, tokenized: 0 };
+    const n = Math.max(0, raw.n - (excludeSelf ? 1 : 0));
+    const tok = Math.max(0, raw.tokenized - (excludeSelf ? isTok : 0));
+    const w = n / (n + LAUNCH_COHORT_SHRINKAGE_K);
+    const empRate = n > 0 ? tok / n : adjBaseRate;
+    const prob = w * empRate + (1 - w) * adjBaseRate;
+    return {
+      probability: Math.max(0.01, Math.min(0.99, prob)),
+      ageBand: band,
+      category: cat,
+      cohortN: n,
+      cohortTokenized: tok,
+      weight: w,
+      baseRate: adjBaseRate,
+    };
+  };
+
+  // Leave-one-out validation across all snapshot protocols.
+  let looCorrect = 0;
+  let baseCorrect = 0;
+  const majorityClass = baseRate >= 0.5;
+  for (const p of protocols) {
+    const actualTok = !isPreToken(p);
+    const pred = predictWithExclusion(p, true);
+    if ((pred.probability >= 0.5) === actualTok) looCorrect++;
+    if (majorityClass === actualTok) baseCorrect++;
+  }
+
+  const orderedBandLabels = [...bandLabels, 'Undated'];
+  const ageBands = orderedBandLabels
+    .map((label) => {
+      const entry = bandCounts.get(label) ?? { n: 0, tokenized: 0 };
+      return {
+        label,
+        n: entry.n,
+        tokenized: entry.tokenized,
+        rate: entry.n > 0 ? entry.tokenized / entry.n : baseRate,
+      };
+    })
+    .filter((b) => b.n > 0);
+
+  const report: LaunchOddsReport = {
+    total,
+    tokenized,
+    baseRate,
+    shrinkageK: LAUNCH_COHORT_SHRINKAGE_K,
+    undatedShrinkageK: LAUNCH_UNDATED_SHRINKAGE_K,
+    looCorrect,
+    looAccuracy: total > 0 ? looCorrect / total : 0,
+    baseCorrect,
+    baseAccuracy: total > 0 ? baseCorrect / total : 0,
+    ageCutoffsDays: cutoffs,
+    ageBands,
+  };
+
+  return {
+    baseRate,
+    total,
+    tokenized,
+    cutoffs,
+    bandLabels,
+    cohortCounts,
+    categoryCounts,
+    report,
+    predict(p: Protocol): LaunchOddsDetail {
+      return predictWithExclusion(p, false);
+    },
   };
 }
 
@@ -492,7 +876,7 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     }
   }
 
-  // Deterministic anchor ordering by slug ascending for 5-fold CV.
+  // Deterministic anchor ordering by slug ascending for CV and LOO.
   const cvAnchors = [...cleanAnchors].sort((a, b) =>
     a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0,
   );
@@ -523,6 +907,93 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     selectedCv = ageCv;
   }
 
+  // M4: Ablation table (all under LOO for consistency).
+  const looFlat = runLooFlatMultiple(cvAnchors);
+  const looSize = runLooOls(cvAnchors, snapshot.as_of, false, false, false);
+  const looCat = runLooOls(cvAnchors, snapshot.as_of, true, false, false);
+  const looGrowth = runLooOls(cvAnchors, snapshot.as_of, true, true, false);
+  const looAge = runLooOls(cvAnchors, snapshot.as_of, true, false, true);
+  const looBoth = runLooOls(cvAnchors, snapshot.as_of, true, true, true);
+
+  // M2: LOO validation of the exact selected specification.
+  const selectedLoo =
+    growthKept && ageKept
+      ? looBoth
+      : growthKept
+        ? looGrowth
+        : ageKept
+          ? looAge
+          : looCat;
+
+  const ablation: AblationStep[] = [
+    {
+      id: 'flat',
+      label: 'Flat global-median multiple',
+      n: looFlat.n,
+      mdape: looFlat.mdape,
+      medianMiss: looFlat.medianMiss,
+      hit2x: looFlat.hit2x,
+      hit3x: looFlat.hit3x,
+      selected: false,
+      status: 'baseline',
+    },
+    {
+      id: 'size',
+      label: 'Size curve (log-log TVL)',
+      n: looSize.metrics.n,
+      mdape: looSize.metrics.mdape,
+      medianMiss: looSize.metrics.medianMiss,
+      hit2x: looSize.metrics.hit2x,
+      hit3x: looSize.metrics.hit3x,
+      selected: false,
+      status: 'kept',
+    },
+    {
+      id: 'category',
+      label: '+ Shrunk category offsets',
+      n: looCat.metrics.n,
+      mdape: looCat.metrics.mdape,
+      medianMiss: looCat.metrics.medianMiss,
+      hit2x: looCat.metrics.hit2x,
+      hit3x: looCat.metrics.hit3x,
+      selected: !growthKept && !ageKept,
+      status: !growthKept && !ageKept ? 'selected' : 'kept',
+    },
+    {
+      id: 'growth',
+      label: '+ 7d growth (asinh)',
+      n: looGrowth.metrics.n,
+      mdape: looGrowth.metrics.mdape,
+      medianMiss: looGrowth.metrics.medianMiss,
+      hit2x: looGrowth.metrics.hit2x,
+      hit3x: looGrowth.metrics.hit3x,
+      selected: growthKept && !ageKept,
+      status: growthKept && !ageKept ? 'selected' : growthKept ? 'kept' : 'dropped',
+    },
+    {
+      id: 'age',
+      label: '+ Protocol age (log)',
+      n: looAge.metrics.n,
+      mdape: looAge.metrics.mdape,
+      medianMiss: looAge.metrics.medianMiss,
+      hit2x: looAge.metrics.hit2x,
+      hit3x: looAge.metrics.hit3x,
+      selected: !growthKept && ageKept,
+      status: !growthKept && ageKept ? 'selected' : ageKept ? 'kept' : 'dropped',
+    },
+    {
+      id: 'growth_age',
+      label: '+ Growth & age combined',
+      n: looBoth.metrics.n,
+      mdape: looBoth.metrics.mdape,
+      medianMiss: looBoth.metrics.medianMiss,
+      hit2x: looBoth.metrics.hit2x,
+      hit3x: looBoth.metrics.hit3x,
+      selected: growthKept && ageKept,
+      status: growthKept && ageKept ? 'selected' : 'dropped',
+    },
+  ];
+
   // Newest-listed cohort holdout: newest 20% by listed_at descending (nulls last).
   const sortedNewest = [...cvAnchors].sort((a, b) => {
     if (a.listed_at === null && b.listed_at === null) {
@@ -536,27 +1007,70 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   const holdN = sortedNewest.length > 1 ? Math.max(1, Math.round(sortedNewest.length * 0.2)) : 0;
   const holdoutSet = sortedNewest.slice(0, holdN);
   const holdoutTrain = sortedNewest.slice(holdN);
-  const holdoutParams = fitParams(holdoutTrain, snapshot.as_of, growthKept, ageKept);
+  const holdoutParams = fitParams(holdoutTrain, snapshot.as_of, growthKept, ageKept, true);
   const holdoutMetrics = evaluateMetrics(
     holdoutSet.map((a) => a.mcap_usd!),
     holdoutSet.map((a) => predictRounded(a, holdoutParams, snapshot.as_of)),
   );
 
   // Full fit using exact winning specification.
-  const fullParams = fitParams(cvAnchors, snapshot.as_of, growthKept, ageKept);
+  const fullParams = fitParams(cvAnchors, snapshot.as_of, growthKept, ageKept, true);
 
-  // Bootstrap refits (seeded mulberry32, N = 250) stored internally for buildBoard.
+  // Bootstrap refits (seeded mulberry32, N = 250) stored internally for buildBoard,
+  // tracking out-of-bag membership for M3 held-out range calibration.
   const rng = mulberry32(BOOTSTRAP_SEED);
   const bootParamsList: ModelParams[] = [];
+  const oobPredsPerAnchor: number[][] = Array.from({ length: cvAnchors.length }, () => []);
+
   if (cvAnchors.length > 0) {
     for (let b = 0; b < BOOTSTRAP_REPS; b++) {
       const sample = new Array<Protocol>(cvAnchors.length);
+      const inBag = new Uint8Array(cvAnchors.length);
       for (let i = 0; i < cvAnchors.length; i++) {
-        sample[i] = cvAnchors[Math.floor(rng() * cvAnchors.length)]!;
+        const pick = Math.floor(rng() * cvAnchors.length);
+        sample[i] = cvAnchors[pick]!;
+        inBag[pick] = 1;
       }
-      bootParamsList.push(fitParams(sample, snapshot.as_of, growthKept, ageKept));
+      const bParams = fitParams(sample, snapshot.as_of, growthKept, ageKept, true);
+      bootParamsList.push(bParams);
+
+      for (let i = 0; i < cvAnchors.length; i++) {
+        if (inBag[i] === 0) {
+          oobPredsPerAnchor[i]!.push(predictRounded(cvAnchors[i]!, bParams, snapshot.as_of));
+        }
+      }
     }
   }
+
+  // M3: Range calibration on held-out (out-of-bag) anchors using the 250 bootstrap refits.
+  let p25p75Hits = 0;
+  let p10p90Hits = 0;
+  let calN = 0;
+  for (let i = 0; i < cvAnchors.length; i++) {
+    const oob = oobPredsPerAnchor[i]!;
+    if (oob.length === 0) continue;
+    oob.sort((a, b) => a - b);
+    const actual = cvAnchors[i]!.mcap_usd!;
+    const p10 = quantile(oob, 0.1);
+    const p25 = quantile(oob, 0.25);
+    const p75 = quantile(oob, 0.75);
+    const p90 = quantile(oob, 0.9);
+    calN++;
+    if (actual >= p25 && actual <= p75) p25p75Hits++;
+    if (actual >= p10 && actual <= p90) p10p90Hits++;
+  }
+
+  const rangeCalibration: RangeCalibrationReport = {
+    n: calN,
+    p25p75Hits,
+    p25p75Rate: calN > 0 ? p25p75Hits / calN : 0,
+    p10p90Hits,
+    p10p90Rate: calN > 0 ? p10p90Hits / calN : 0,
+    method: 'out-of-bag bootstrap (250 refits)',
+  };
+
+  // M1: Empirical launch-odds model.
+  const launchOddsModel = fitLaunchOddsModel(snapshot);
 
   const categories = [...fullParams.categoryCounts.entries()]
     .map(([name, n]) => ({
@@ -567,6 +1081,11 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     }))
     .sort((a, b) => b.n - a.n || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
+  const looPredBySlug = new Map<string, number>();
+  for (let i = 0; i < cvAnchors.length; i++) {
+    looPredBySlug.set(cvAnchors[i]!.slug, selectedLoo.preds[i]!);
+  }
+
   const anchorsReport = [...cvAnchors]
     .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
     .map((a) => ({
@@ -576,6 +1095,7 @@ export function fitModel(snapshot: Snapshot): FittedModel {
       tvl: a.tvl_usd,
       actual: a.mcap_usd!,
       predicted: predictRounded(a, fullParams, snapshot.as_of),
+      looPredicted: looPredBySlug.get(a.slug) ?? predictRounded(a, fullParams, snapshot.as_of),
     }));
 
   const partition: Partition = {
@@ -611,6 +1131,10 @@ export function fitModel(snapshot: Snapshot): FittedModel {
       hit2x: holdoutMetrics.hit2x,
       n: holdoutMetrics.n,
     },
+    loo: selectedLoo.metrics,
+    rangeCalibration,
+    ablation,
+    launchOdds: launchOddsModel.report,
     categories,
     anchors: anchorsReport,
   };
@@ -620,6 +1144,15 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     partition,
     predict(p: Protocol): number {
       return predictRounded(p, fullParams, snapshot.as_of);
+    },
+    expectedValue(p: Protocol): number {
+      const valIfLaunch = predictFloat(p, fullParams, snapshot.as_of);
+      const odds = launchOddsModel.predict(p).probability;
+      const ev = Math.round(valIfLaunch * odds);
+      return Number.isFinite(ev) && ev >= 1 ? ev : 1;
+    },
+    launchOdds(p: Protocol): LaunchOddsDetail {
+      return launchOddsModel.predict(p);
     },
     breakdown(p: Protocol): ScoredProtocol['breakdown'] {
       return computeBreakdown(p, fullParams, snapshot.as_of);
@@ -632,15 +1165,19 @@ export function fitModel(snapshot: Snapshot): FittedModel {
 
 /**
  * Build the board: every pre-token watchlist slug, plus every other pre-token
- * protocol that is a genuine launch candidate, ranked by implied circulating
- * market cap descending (slug ascending breaks ties). Includes 10th/90th
- * percentile rank and implied bands across 250 deterministic bootstrap refits.
+ * protocol that is a genuine launch candidate, ranked by expected value
+ * (value_if_launches * P(launch)) descending (slug ascending breaks ties).
+ * Includes P10–P90 and P25–P75 value bands and P10–P90 rank bands across 250
+ * deterministic bootstrap refits.
  */
 export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtocol[] {
   const watch = new Set(snapshot.watchlist);
   const candidates: Array<{
     protocol: Protocol;
     watchlist: boolean;
+    valueIfLaunchUsd: number;
+    launchCohort: LaunchOddsDetail;
+    launchOdds: number;
     impliedUsd: number;
     ageDays: number | null;
     breakdown: ScoredProtocol['breakdown'];
@@ -650,11 +1187,17 @@ export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtoc
     const onWatchlist = watch.has(p.slug) && isPreToken(p);
     if (!onWatchlist && !isLaunchCandidate(p)) continue;
     const breakdown = model.breakdown(p);
-    const impliedUsd = model.predict(p);
+    const valueIfLaunchUsd = model.predict(p);
+    const launchCohort = model.launchOdds(p);
+    const launchOdds = launchCohort.probability;
+    const impliedUsd = model.expectedValue(p);
     const ageDays = p.listed_at === null ? null : daysBetween(p.listed_at, snapshot.as_of);
     candidates.push({
       protocol: p,
       watchlist: onWatchlist,
+      valueIfLaunchUsd,
+      launchCohort,
+      launchOdds,
       impliedUsd,
       ageDays,
       breakdown,
@@ -677,6 +1220,15 @@ export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtoc
       impliedUsd: c.impliedUsd,
       impliedLowUsd: c.impliedUsd,
       impliedHighUsd: c.impliedUsd,
+      impliedP25Usd: c.impliedUsd,
+      impliedP75Usd: c.impliedUsd,
+      valueIfLaunchUsd: c.valueIfLaunchUsd,
+      valueIfLaunchP10Usd: c.valueIfLaunchUsd,
+      valueIfLaunchP25Usd: c.valueIfLaunchUsd,
+      valueIfLaunchP75Usd: c.valueIfLaunchUsd,
+      valueIfLaunchP90Usd: c.valueIfLaunchUsd,
+      launchOdds: c.launchOdds,
+      launchCohort: c.launchCohort,
       rankLow: idx + 1,
       rankHigh: idx + 1,
       watchlist: c.watchlist,
@@ -685,39 +1237,71 @@ export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtoc
     }));
   }
 
-  const impliedSamples: number[][] = Array.from({ length: m }, () => new Array<number>(B));
+  const evSamples: number[][] = Array.from({ length: m }, () => new Array<number>(B));
+  const valSamples: number[][] = Array.from({ length: m }, () => new Array<number>(B));
   const rankSamples: number[][] = Array.from({ length: m }, () => new Array<number>(B));
-  const scoredBuf: Array<{ idx: number; val: number; slug: string }> = candidates.map((c, idx) => ({
-    idx,
-    val: 0,
-    slug: c.protocol.slug,
-  }));
+  const scoredBuf: Array<{ idx: number; ev: number; val: number; slug: string }> = candidates.map(
+    (c, idx) => ({
+      idx,
+      ev: 0,
+      val: 0,
+      slug: c.protocol.slug,
+    }),
+  );
 
   for (let b = 0; b < B; b++) {
     const params = boot.paramsList[b]!;
     for (let i = 0; i < m; i++) {
       const entry = scoredBuf[i]!;
+      const cand = candidates[i]!;
+      const valFloat = predictFloat(cand.protocol, params, boot.asOf);
+      const val = Math.max(1, Math.round(valFloat));
+      const ev = Math.max(1, Math.round(valFloat * cand.launchOdds));
       entry.idx = i;
-      entry.slug = candidates[i]!.protocol.slug;
-      entry.val = predictRounded(candidates[i]!.protocol, params, boot.asOf);
+      entry.slug = cand.protocol.slug;
+      entry.val = val;
+      entry.ev = ev;
     }
-    scoredBuf.sort((a, c) => c.val - a.val || (a.slug < c.slug ? -1 : a.slug > c.slug ? 1 : 0));
+    scoredBuf.sort((a, c) => c.ev - a.ev || (a.slug < c.slug ? -1 : a.slug > c.slug ? 1 : 0));
     for (let r = 0; r < m; r++) {
       const entry = scoredBuf[r]!;
-      impliedSamples[entry.idx]![b] = entry.val;
+      evSamples[entry.idx]![b] = entry.ev;
+      valSamples[entry.idx]![b] = entry.val;
       rankSamples[entry.idx]![b] = r + 1;
     }
   }
 
   return candidates.map((c, idx) => {
     const pointRank = idx + 1;
-    const impSorted = impliedSamples[idx]!.sort((a, b) => a - b);
+    const evSorted = evSamples[idx]!.sort((a, b) => a - b);
+    const valSorted = valSamples[idx]!.sort((a, b) => a - b);
     const rnkSorted = rankSamples[idx]!.sort((a, b) => a - b);
 
-    const qImpLow = Math.max(1, Math.round(quantile(impSorted, 0.1)));
-    const qImpHigh = Math.max(1, Math.round(quantile(impSorted, 0.9)));
-    const impliedLowUsd = Math.min(c.impliedUsd, qImpLow);
-    const impliedHighUsd = Math.max(c.impliedUsd, qImpHigh);
+    const qEvP10 = Math.max(1, Math.round(quantile(evSorted, 0.1)));
+    const qEvP25 = Math.max(1, Math.round(quantile(evSorted, 0.25)));
+    const qEvP75 = Math.max(1, Math.round(quantile(evSorted, 0.75)));
+    const qEvP90 = Math.max(1, Math.round(quantile(evSorted, 0.9)));
+
+    const impliedLowUsd = Math.min(c.impliedUsd, qEvP10);
+    const impliedHighUsd = Math.max(c.impliedUsd, qEvP90);
+    const impliedP25Usd = Math.max(impliedLowUsd, Math.min(qEvP25, impliedHighUsd));
+    const impliedP75Usd = Math.max(impliedP25Usd, Math.min(qEvP75, impliedHighUsd));
+
+    const qValP10 = Math.max(1, Math.round(quantile(valSorted, 0.1)));
+    const qValP25 = Math.max(1, Math.round(quantile(valSorted, 0.25)));
+    const qValP75 = Math.max(1, Math.round(quantile(valSorted, 0.75)));
+    const qValP90 = Math.max(1, Math.round(quantile(valSorted, 0.9)));
+
+    const valueIfLaunchP10Usd = Math.min(c.valueIfLaunchUsd, qValP10);
+    const valueIfLaunchP90Usd = Math.max(c.valueIfLaunchUsd, qValP90);
+    const valueIfLaunchP25Usd = Math.max(
+      valueIfLaunchP10Usd,
+      Math.min(qValP25, valueIfLaunchP90Usd),
+    );
+    const valueIfLaunchP75Usd = Math.max(
+      valueIfLaunchP25Usd,
+      Math.min(qValP75, valueIfLaunchP90Usd),
+    );
 
     const qRankLow = Math.max(1, Math.round(quantile(rnkSorted, 0.1)));
     const qRankHigh = Math.min(m, Math.round(quantile(rnkSorted, 0.9)));
@@ -729,6 +1313,15 @@ export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtoc
       impliedUsd: c.impliedUsd,
       impliedLowUsd,
       impliedHighUsd,
+      impliedP25Usd,
+      impliedP75Usd,
+      valueIfLaunchUsd: c.valueIfLaunchUsd,
+      valueIfLaunchP10Usd,
+      valueIfLaunchP25Usd,
+      valueIfLaunchP75Usd,
+      valueIfLaunchP90Usd,
+      launchOdds: c.launchOdds,
+      launchCohort: c.launchCohort,
       rankLow,
       rankHigh,
       watchlist: c.watchlist,

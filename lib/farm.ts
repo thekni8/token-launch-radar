@@ -1,12 +1,52 @@
 // LaunchLens farm plans & economics: transparent per-chain round-trip fee
-// assumptions, pro-rata airdrop return estimates, FARM/THIN/SKIP verdicts,
-// and concrete category-tailored execution steps.
+// assumptions, pro-rata airdrop return estimates, per-protocol deposit sizing
+// (M5), net-per-hour & breakeven surfacing, FARM/THIN/SKIP verdicts, and
+// concrete category-tailored execution steps.
 //
 // main.ts serialises FAMILY_BY_CATEGORY, PLAN_TEMPLATES, MULTI_CHAIN_STEP,
-// SINGLE_CHAIN_STEP, and CHAIN_FEES into the dashboard's data.js.
+// SINGLE_CHAIN_STEP, CHAIN_FEES, and PLAN_DEPOSIT_GRID into the dashboard's
+// z-data.js.
 
 /** Fallback round-trip USD fee assumption for chains not listed in CHAIN_FEES. */
 export const DEFAULT_FEE_USD = 5;
+
+/** Default scenario deposit in the interactive sandbox. */
+export const DEFAULT_SANDBOX_DEPOSIT_USD = 1000;
+
+/** Default holding period in days. */
+export const DEFAULT_HOLDING_DAYS = 90;
+
+/** Minimum deposit considered by the per-protocol plan optimizer. */
+export const MIN_PLAN_DEPOSIT_USD = 100;
+
+/** Sane global upper cap for per-protocol plan deposits. */
+export const MAX_PLAN_DEPOSIT_USD = 50_000;
+
+/**
+ * Per-protocol liquidity concentration cap (fraction of protocol TVL).
+ * At 0.05% (5 bps) of TVL, a $5M protocol caps at $2,500, a $20M protocol
+ * caps at $10,000, and protocols at $100M+ TVL reach the $50,000 cap.
+ */
+export const DEFAULT_MAX_TVL_SHARE = 0.0005;
+
+/** Deterministic log-spaced deposit grid ($100–$50,000) for per-protocol plan sizing. */
+export const PLAN_DEPOSIT_GRID: readonly number[] = [
+  100,
+  200,
+  350,
+  500,
+  750,
+  1000,
+  1500,
+  2500,
+  4000,
+  6000,
+  10000,
+  15000,
+  25000,
+  35000,
+  50000,
+];
 
 /**
  * Estimated round-trip cost in USD (entry + exit gas + one swap/bridge
@@ -54,6 +94,12 @@ export interface FarmEconomics {
   netUsd: number;
   roiPct: number;
   breakevenUsd: number;
+  breakevenLabel: string;
+  holdingHours: number;
+  netPerHourUsd: number;
+  netPerHourLabel: string;
+  paysWithinCap: boolean;
+  maxPlanDepositUsd: number;
   verdict: 'FARM' | 'THIN' | 'SKIP';
   chain: string;
   poolPct: number;
@@ -66,10 +112,68 @@ export interface FarmOptions {
   holdingDays?: number;
   poolPct?: number;
   campaignDays?: number;
+  maxPlanDepositUsd?: number;
+  maxTvlShare?: number;
+}
+
+export interface PlanSearchOptions extends FarmOptions {
+  minDepositUsd?: number;
+  maxDepositUsd?: number;
+  grid?: readonly number[];
 }
 
 function feeForChain(chain: string): number {
   return CHAIN_FEES[chain] ?? DEFAULT_FEE_USD;
+}
+
+function formatDollars(amount: number): string {
+  const sign = amount < 0 ? '-' : '';
+  const abs = Math.abs(amount);
+  if (abs >= 100) {
+    const rounded = Math.round(abs).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return `${sign}$${rounded}`;
+  }
+  return `${sign}$${abs.toFixed(2)}`;
+}
+
+/** Format net USD per holding-period hour (e.g. "+$0.65/h", "-$0.01/h"). */
+export function formatNetPerHour(netPerHourUsd: number): string {
+  if (!Number.isFinite(netPerHourUsd)) return '$0.00/h';
+  const sign = netPerHourUsd >= 0 ? '+' : '-';
+  const abs = Math.abs(netPerHourUsd);
+  const digits = abs > 0 && abs < 0.01 ? 3 : 2;
+  return `${sign}$${abs.toFixed(digits)}/h`;
+}
+
+/** Format breakeven deposit relative to the protocol's sane plan cap. */
+export function formatBreakevenLabel(
+  breakevenUsd: number,
+  maxDepositUsd = MAX_PLAN_DEPOSIT_USD,
+): string {
+  if (!Number.isFinite(breakevenUsd) || breakevenUsd <= 0 || breakevenUsd > maxDepositUsd) {
+    return 'no ticket pays';
+  }
+  return `pays from ${formatDollars(breakevenUsd)}`;
+}
+
+/** Sane per-protocol upper deposit cap bounded by global max and TVL share. */
+export function protocolDepositCap(
+  tvlUsd: number,
+  maxDepositUsd = MAX_PLAN_DEPOSIT_USD,
+  maxTvlShare = DEFAULT_MAX_TVL_SHARE,
+  minDepositUsd = MIN_PLAN_DEPOSIT_USD,
+): number {
+  const effMax =
+    Number.isFinite(maxDepositUsd) && maxDepositUsd > 0 ? maxDepositUsd : MAX_PLAN_DEPOSIT_USD;
+  const effMin =
+    Number.isFinite(minDepositUsd) && minDepositUsd > 0
+      ? Math.min(minDepositUsd, effMax)
+      : Math.min(MIN_PLAN_DEPOSIT_USD, effMax);
+  const effShare =
+    Number.isFinite(maxTvlShare) && maxTvlShare > 0 ? maxTvlShare : DEFAULT_MAX_TVL_SHARE;
+  const effTvl = Number.isFinite(tvlUsd) && tvlUsd > 0 ? tvlUsd : 0;
+  const tvlCap = effTvl * effShare;
+  return Math.max(effMin, Math.min(effMax, tvlCap));
 }
 
 /**
@@ -101,11 +205,12 @@ export function verdictFor(netUsd: number, roiPct: number): 'FARM' | 'THIN' | 'S
 }
 
 /**
- * Pro-rata farm economics bridging implied circulating value to user dollars:
+ * Pro-rata farm economics bridging implied expected value to user dollars:
  *   grossUsd = impliedUsd * (poolPct / 100) * (depositUsd / (tvlUsd + depositUsd)) * (holdingDays / campaignDays)
  *   netUsd   = grossUsd - feesUsd
  *   roiPct   = (netUsd / depositUsd) * 100
- *   breakevenUsd = feesUsd * tvlUsd / max(1e-9, impliedUsd * (poolPct / 100) * (holdingDays / campaignDays) - feesUsd)
+ *   netPerHourUsd = netUsd / (holdingDays * 24)
+ *   breakevenUsd  = feesUsd * tvlUsd / max(1e-9, impliedUsd * (poolPct / 100) * (holdingDays / campaignDays) - feesUsd)
  */
 export function farmEconomics(
   tvlUsd: number,
@@ -116,15 +221,15 @@ export function farmEconomics(
   const depositUsd =
     opts?.depositUsd !== undefined && Number.isFinite(opts.depositUsd) && opts.depositUsd > 0
       ? opts.depositUsd
-      : 1000;
+      : DEFAULT_SANDBOX_DEPOSIT_USD;
   const holdingDays =
     opts?.holdingDays !== undefined && Number.isFinite(opts.holdingDays) && opts.holdingDays > 0
       ? opts.holdingDays
-      : 90;
+      : DEFAULT_HOLDING_DAYS;
   const campaignDays =
     opts?.campaignDays !== undefined && Number.isFinite(opts.campaignDays) && opts.campaignDays > 0
       ? opts.campaignDays
-      : 90;
+      : DEFAULT_HOLDING_DAYS;
   const poolPct =
     opts?.poolPct !== undefined && Number.isFinite(opts.poolPct) && opts.poolPct >= 0
       ? opts.poolPct
@@ -132,6 +237,11 @@ export function farmEconomics(
 
   const effTvl = Number.isFinite(tvlUsd) && tvlUsd > 0 ? tvlUsd : 1;
   const effImplied = Number.isFinite(impliedUsd) && impliedUsd > 0 ? impliedUsd : 0;
+  const maxPlanDepositUsd = protocolDepositCap(
+    effTvl,
+    opts?.maxPlanDepositUsd ?? MAX_PLAN_DEPOSIT_USD,
+    opts?.maxTvlShare ?? DEFAULT_MAX_TVL_SHARE,
+  );
 
   const { chain, feeUsd: feesUsd } = cheapestChain(chains);
   const timeRatio = holdingDays / campaignDays;
@@ -144,10 +254,15 @@ export function farmEconomics(
 
   const netUsd = grossUsd - feesUsd;
   const roiPct = (netUsd / depositUsd) * 100;
+  const holdingHours = holdingDays * 24;
+  const netPerHourUsd = netUsd / holdingHours;
+  const netPerHourLabel = formatNetPerHour(netPerHourUsd);
 
   const denom = effImplied * poolShare * timeRatio - feesUsd;
   const breakevenUsd =
     effImplied <= 0 || denom <= 0 ? Infinity : (feesUsd * effTvl) / Math.max(1e-9, denom);
+  const paysWithinCap = Number.isFinite(breakevenUsd) && breakevenUsd <= maxPlanDepositUsd;
+  const breakevenLabel = formatBreakevenLabel(breakevenUsd, maxPlanDepositUsd);
 
   const verdict = effImplied <= 0 ? 'SKIP' : verdictFor(netUsd, roiPct);
 
@@ -158,12 +273,102 @@ export function farmEconomics(
     netUsd,
     roiPct,
     breakevenUsd,
+    breakevenLabel,
+    holdingHours,
+    netPerHourUsd,
+    netPerHourLabel,
+    paysWithinCap,
+    maxPlanDepositUsd,
     verdict,
     chain,
     poolPct,
     holdingDays,
     campaignDays,
   };
+}
+
+/**
+ * M5: Per-protocol deposit-sized plan economics.
+ * Searches a deterministic log grid ($100–$50,000, bounded by the protocol's
+ * liquidity concentration cap) for the deposit that maximizes net USD under
+ * the current sandbox assumptions. If no ticket within the cap produces
+ * positive net USD, falls back to the sandbox default deposit (clamped to the
+ * cap) with verdict SKIP and breakevenLabel "no ticket pays".
+ */
+export function optimalFarmEconomics(
+  tvlUsd: number,
+  impliedUsd: number,
+  chains: string[],
+  opts?: PlanSearchOptions,
+): FarmEconomics {
+  const minDepositUsd =
+    opts?.minDepositUsd !== undefined &&
+    Number.isFinite(opts.minDepositUsd) &&
+    opts.minDepositUsd > 0
+      ? opts.minDepositUsd
+      : MIN_PLAN_DEPOSIT_USD;
+  const maxDepositUsd =
+    opts?.maxDepositUsd !== undefined &&
+    Number.isFinite(opts.maxDepositUsd) &&
+    opts.maxDepositUsd > 0
+      ? opts.maxDepositUsd
+      : opts?.maxPlanDepositUsd ?? MAX_PLAN_DEPOSIT_USD;
+  const maxTvlShare =
+    opts?.maxTvlShare !== undefined && Number.isFinite(opts.maxTvlShare) && opts.maxTvlShare > 0
+      ? opts.maxTvlShare
+      : DEFAULT_MAX_TVL_SHARE;
+
+  const capUsd = protocolDepositCap(tvlUsd, maxDepositUsd, maxTvlShare, minDepositUsd);
+  const rawGrid = opts?.grid && opts.grid.length > 0 ? opts.grid : PLAN_DEPOSIT_GRID;
+
+  const candidates: number[] = [];
+  for (const d of rawGrid) {
+    if (Number.isFinite(d) && d >= minDepositUsd && d <= capUsd) {
+      candidates.push(d);
+    }
+  }
+  const roundedCap = Math.round(capUsd);
+  if (
+    roundedCap >= minDepositUsd &&
+    (candidates.length === 0 || candidates[candidates.length - 1]! < roundedCap)
+  ) {
+    candidates.push(roundedCap);
+  }
+  candidates.sort((a, b) => a - b);
+
+  const sharedOpts: FarmOptions = {
+    holdingDays: opts?.holdingDays,
+    poolPct: opts?.poolPct,
+    campaignDays: opts?.campaignDays,
+    maxPlanDepositUsd: maxDepositUsd,
+    maxTvlShare,
+  };
+
+  let bestPositive: FarmEconomics | null = null;
+  for (const d of candidates) {
+    const econ = farmEconomics(tvlUsd, impliedUsd, chains, {
+      ...sharedOpts,
+      depositUsd: d,
+    });
+    if (econ.netUsd > 0) {
+      if (bestPositive === null || econ.netUsd > bestPositive.netUsd) {
+        bestPositive = econ;
+      }
+    }
+  }
+
+  if (bestPositive !== null) {
+    return bestPositive;
+  }
+
+  const fallbackDeposit = Math.max(
+    minDepositUsd,
+    Math.min(capUsd, opts?.depositUsd ?? DEFAULT_SANDBOX_DEPOSIT_USD),
+  );
+  return farmEconomics(tvlUsd, impliedUsd, chains, {
+    ...sharedOpts,
+    depositUsd: Math.round(fallbackDeposit),
+  });
 }
 
 /** Category -> plan family. Categories not listed here use the generic family. */
@@ -329,16 +534,6 @@ function fill(template: string, name: string, chain: string, chain2: string): st
   return template.split('{n}').join(name).split('{c}').join(chain).split('{d}').join(chain2);
 }
 
-function formatDollars(amount: number): string {
-  const sign = amount < 0 ? '-' : '';
-  const abs = Math.abs(amount);
-  if (abs >= 100) {
-    const rounded = Math.round(abs).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    return `${sign}$${rounded}`;
-  }
-  return `${sign}$${abs.toFixed(2)}`;
-}
-
 function clampStep(step: string): string {
   const trimmed = step.trim();
   if (trimmed.length <= 600) return trimmed;
@@ -347,9 +542,9 @@ function clampStep(step: string): string {
 
 /**
  * The farm plan for one protocol: 5 strings, each 20–600 characters once trimmed.
- * Step 1 states the deposit, cheapest chain, and round-trip fee alongside the
- * primary category action; steps 2–4 cover follow-through and chain breadth;
- * step 5 states the net dollar verdict (FARM / THIN / SKIP).
+ * Step 1 states the deposit-sized plan ticket, cheapest chain, and round-trip fee
+ * alongside the primary category action; steps 2–4 cover follow-through and chain
+ * breadth; step 5 states net USD, net-per-hour, ROI, breakeven, and verdict.
  */
 export function farmPlan(
   category: string | null,
@@ -371,7 +566,7 @@ export function farmPlan(
     fill(chains.length >= 2 && secondary ? MULTI_CHAIN_STEP : SINGLE_CHAIN_STEP, name, chain, secondary),
   );
   const step5 = clampStep(
-    `Net at ${formatDollars(econ.depositUsd)} for ${econ.holdingDays} days: ${formatDollars(econ.netUsd)} after ~${formatDollars(econ.feesUsd)} fees (${econ.roiPct.toFixed(1)}% ROI) — verdict ${econ.verdict}.`,
+    `Plan at ${formatDollars(econ.depositUsd)} for ${econ.holdingDays}d: ${formatDollars(econ.netUsd)} net (${econ.netPerHourLabel}, ${econ.roiPct.toFixed(1)}% ROI) after ~${formatDollars(econ.feesUsd)} fees; ${econ.breakevenLabel} — verdict ${econ.verdict}.`,
   );
 
   return [step1, step2, step3, step4, step5];
