@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LaunchLens — Token Launch Radar</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <div class="mast">
+    <div>
+      <h1>LaunchLens</h1>
+      <p class="tag">Which pre-token protocol is worth farming next — and what to do about it.</p>
+    </div>
+    <div class="meta" id="meta"></div>
+  </div>
+  <details class="how">
+    <summary>How value is calculated</summary>
+    <p>Every implied value comes from this snapshot's own figures — no list of names is typed in by hand.</p>
+    <p class="formula">implied value = TVL &times; category multiple &times; momentum &times; age factor</p>
+    <ul>
+      <li><b>Category multiple</b> — the median market-cap-to-TVL ratio of the tokenised protocols in the same category, measured from this snapshot. It is the market's own pricing of a tokenised protocol in that category. A category with fewer than three tokenised protocols falls back to the global median.</li>
+      <li><b>Momentum</b> — the protocol's 7-day TVL change, clamped to &plusmn;30%. Growing TVL lifts the value; shrinking TVL cuts it.</li>
+      <li><b>Age factor</b> — days since DefiLlama began tracking the protocol with no token, on a log scale capped at +30%. Longer at scale with no token means more pent-up launch value.</li>
+    </ul>
+    <p>The board holds protocols that record no token. Protocols whose token already trades are not rows — they exist only to calibrate the multiples. Wrapped, staked and bridged products of tokens that already trade are left off too: they are not launches waiting to happen. Every row's value can be reproduced from the snapshot by the formula above.</p>
+  </details>
+</header>
+
+<main>
+  <div class="filters">
+    <input id="q" type="search" placeholder="Search name or slug" aria-label="Search name or slug">
+    <select id="cat" aria-label="Category"><option value="">All categories</option></select>
+    <select id="chain" aria-label="Chain"><option value="">All chains</option></select>
+    <label class="wl"><input id="wl" type="checkbox"> Watchlist only</label>
+    <label class="min">Min TVL $ <input id="mintvl" type="number" min="0" step="1000000" placeholder="0"></label>
+    <span class="count" id="count"></span>
+  </div>
+  <table>
+    <thead><tr>
+      <th><button data-sort="rank">Rank</button></th>
+      <th>Protocol</th>
+      <th>Category</th>
+      <th>Chains</th>
+      <th><button data-sort="tvl">TVL</button></th>
+      <th>Multiple</th>
+      <th><button data-sort="chg">7d</button></th>
+      <th><button data-sort="implied">Implied value</button></th>
+      <th><button data-sort="age">Age</button></th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p class="hint">Click any row for the full detail view: value breakdown and farm plan.</p>
+</main>
+
+<div class="overlay" id="overlay" hidden>
+  <section class="detail" id="detail" role="dialog" aria-modal="true" aria-label="Protocol detail"></section>
+</div>
+
+<footer>
+  <p>Implied values are this radar's own claim, computed from the snapshot — not a prediction of whether or when a token launches. Snapshot source: DefiLlama protocols data, as of the date above.</p>
+</footer>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
