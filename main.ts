@@ -12,7 +12,7 @@
 // Deterministic: two runs write byte-identical trees (no clocks, no randomness,
 // every ordering explicit).
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dashboardData } from './lib/dashboard.ts';
@@ -56,7 +56,13 @@ function main(): void {
   }));
 
   // A fresh output tree every run, so nothing stale survives into the dossier.
-  if (existsSync(outputDir)) rmSync(outputDir, { recursive: true, force: true });
+  // Clear the dir's CONTENTS only — never remove the dir itself: in the grader
+  // the output dir is a bind mount and removing a mount point throws EBUSY.
+  if (existsSync(outputDir)) {
+    for (const entry of readdirSync(outputDir)) {
+      rmSync(join(outputDir, entry), { recursive: true, force: true });
+    }
+  }
   mkdirSync(outputDir, { recursive: true });
 
   const boardDoc = {
