@@ -88,13 +88,14 @@
   function drawKpis() {
     var wlEv = [], farmN = 0;
     for (var i = 0; i < ROWS.length; i++) { if (ROWS[i][8] === 1) wlEv.push(ROWS[i][6]); if (farmForRow(ROWS[i]).v === 2) farmN++; }
-    var lo = MODEL.lo || {}, loo = MODEL.loo || [], cal = MODEL.cal || [];
+    var lo = MODEL.lo || {}, loo = MODEL.loo || [], cal = MODEL.cal || [], conf = MODEL.conf || [];
+    var hasConf = conf.length > 0;
     var auditTot = (LL.audit && LL.audit[6]) || LL.t;
     var tiles = [
       ['Watchlist Covered', wlEv.length + '/' + LL.w, 'Median EV ' + fmtMoney(medianOf(wlEv))],
       ['Launch Odds LOO', fmtPct(lo.looAcc), (lo.looOk || 0) + '/' + (lo.n || LL.t) + ' right vs ' + fmtPct(lo.baseAcc) + ' base'],
       ['Value LOO Miss', fmtMiss(loo[1]), fmtPct(loo[2]) + ' ≤2× · ' + fmtPct(loo[3]) + ' ≤3× (' + (loo[5] || MODEL.fitN || 0) + ' refits)'],
-      ['Range Holds', fmtPct(cal[2]) + ' / ' + fmtPct(cal[4]), 'P25–75 (50% id.) · P10–90 (80% id.)'],
+      ['Range Holds', fmtPct(hasConf ? conf[11] : cal[2]) + ' / ' + fmtPct(hasConf ? conf[12] : cal[4]), hasConf ? 'Conformal P25-75 (50% id.) · P10-90 (80% id.) · nested' : 'P25–75 (50% id.) · P10–90 (80% id.)'],
       ['FARM Rated', String(farmN), (ui.autoSize ? 'Auto-sized' : fmtDollars(ui.deposit)) + ' · ' + ui.holdDays + 'd · ' + ui.poolPct + '%'],
       ['Snapshot Accounted', auditTot + '/' + LL.t, (LL.kinN || 0) + ' board rows flagged kin']
     ];
@@ -142,13 +143,15 @@
   function drawModel() {
     var elastic = (MODEL.el != null ? MODEL.el : (LL.el / 1000)).toFixed(3);
     var int10 = MODEL.int != null ? (MODEL.int / Math.LN10).toFixed(2) : '—';
-    var loo = MODEL.loo || [], cal = MODEL.cal || [], lo = MODEL.lo || {};
+    var loo = MODEL.loo || [], cal = MODEL.cal || [], conf = MODEL.conf || [], lo = MODEL.lo || {};
+    var confOn = conf.length > 0;
+    var holdIn = confOn ? conf[11] : cal[2], holdOut = confOn ? conf[12] : cal[4];
     var catMults = (LL.catf || []).filter(function (c) { return c[0] > 0; }).map(function (c) { return Math.exp(c[1] / 1000); });
     var catMin = catMults.length ? Math.min.apply(null, catMults).toFixed(2) : '1.00';
     var catMax = catMults.length ? Math.max.apply(null, catMults).toFixed(2) : '1.00';
     var gText = MODEL.gKept && MODEL.gCoef != null ? 'exp(' + MODEL.gCoef.toFixed(3) + '·asinh(chg7d/100))' : '1.00 (dropped by CV)';
     var aText = MODEL.aKept && MODEL.aCoef != null ? 'exp(' + MODEL.aCoef.toFixed(3) + '·ln(1+age/365))' : '1.00 (dropped by CV)';
-    el('mdlSummary').textContent = '— EV = 10^' + int10 + ' × TVL^' + elastic + ' × cat × P(launch) · LOO ' + fmtMiss(loo[1]) + ' · Range holds ' + fmtPct(cal[2]) + '/' + fmtPct(cal[4]);
+    el('mdlSummary').textContent = '— EV = 10^' + int10 + ' × TVL^' + elastic + ' × cat × P(launch) · LOO ' + fmtMiss(loo[1]) + ' · Range holds ' + fmtPct(holdIn) + '/' + fmtPct(holdOut);
     el('mdlNarrative').innerHTML =
       '<p>Every board row is ranked by <b>Expected Value = Value-if-Launches × Launch Odds</b>, calibrated from <b>' + (MODEL.fitN || 0) + '</b> tokenised anchors (' + (MODEL.out || 0) + ' outliers dropped) and all <b>' + (lo.n || LL.t) + '</b> snapshot protocols:</p>' +
       '<p class="formula">implied = 10<sup>' + int10 + '</sup> &times; TVL<sup>' + elastic + '</sup> &times; category &times; growth &times; age &times; launch odds</p>' +
@@ -160,7 +163,7 @@
       '<li><b>launch odds</b>: cohort tokenisation share (age band + category), shrunk to ' + fmtPct(lo.base) + ' base rate (<i>k</i>=' + (lo.k || 10) + ').</li></ul>';
     var cv = MODEL.cv || [], big = MODEL.cvBig || [], base = MODEL.base || [], hold = MODEL.hold || [];
     var cvRows = [
-      ['LOO (125 refits, selected)', loo[5], loo[1], loo[0], loo[2], loo[3], loo[4]],
+      ['LOO (' + (loo[5] || MODEL.fitN || 0) + ' refits, selected)', loo[5], loo[1], loo[0], loo[2], loo[3], loo[4]],
       ['5-fold CV (Model, all)', cv[3], null, cv[0], cv[1], null, cv[2]],
       ['5-fold CV (TVL ≥ $10M)', big[3], null, big[0], big[1], null, big[2]],
       ['Baseline (Global Median)', cv[3], null, base[0], base[1], null, base[2]],
@@ -169,11 +172,24 @@
     el('mdlCv').innerHTML = cvRows.map(function (r) {
       return '<tr><td>' + r[0] + '</td>' + TD_NUM + (r[1] || '—') + '</td>' + TD_NUM + fmtMiss(r[2]) + '</td>' + TD_NUM + fmtPct(r[3]) + '</td>' + TD_NUM + fmtPct(r[4]) + '</td>' + TD_NUM + fmtPct(r[5]) + '</td>' + TD_NUM + fmtRho(r[6]) + '</td></tr>';
     }).join('');
-    el('mdlCal').innerHTML =
-      '<div class="cal-grid">' +
-      statTile('', 'P25–P75 RANGE HOLDS', fmtPct(cal[2]) + ' (' + (cal[1] || 0) + '/' + (cal[0] || 0) + ') — 50% if exact') +
-      statTile('', 'P10–P90 RANGE HOLDS', fmtPct(cal[4]) + ' (' + (cal[3] || 0) + '/' + (cal[0] || 0) + ') — 80% if exact') +
-      '</div><p class="muted sm">Checked on out-of-bag held-out anchors across 250 seeded bootstrap refits (parameter-uncertainty bands; honest coverage reported even when narrow).</p>';
+    // Conformal tile when the model ships conf[] (round 5+); otherwise the
+    // round-4 OOB tile. conf layout: [n, mean, sd, q10, q25, q75, q90,
+    // f10, f25, f75, f90, nested P25-75, nested P10-90].
+    var calHtml;
+    if (confOn) {
+      var innerHits = Math.round(conf[11] * conf[0]), outerHits = Math.round(conf[12] * conf[0]);
+      calHtml = '<div class="cal-grid">' +
+        statTile('', 'P25–P75 RANGE HOLDS', fmtPct(conf[11]) + ' (' + innerHits + '/' + conf[0] + ') — 50% if exact') +
+        statTile('', 'P10–P90 RANGE HOLDS', fmtPct(conf[12]) + ' (' + outerHits + '/' + conf[0] + ') — 80% if exact') +
+        '</div><p class="sm">Bands span x' + conf[8].toFixed(2) + '–x' + conf[9].toFixed(2) + ' (P25–75) and x' + conf[7].toFixed(2) + '–x' + conf[10].toFixed(2) + ' (P10–90) of the point value.</p>' +
+        '<p class="muted sm">Parameter-only bootstrap bands held ' + fmtPct(cal[2]) + ' / ' + fmtPct(cal[4]) + ' — conformal bands use the LOO residual spread instead.</p>';
+    } else {
+      calHtml = '<div class="cal-grid">' +
+        statTile('', 'P25–P75 RANGE HOLDS', fmtPct(cal[2]) + ' (' + (cal[1] || 0) + '/' + (cal[0] || 0) + ') — 50% if exact') +
+        statTile('', 'P10–P90 RANGE HOLDS', fmtPct(cal[4]) + ' (' + (cal[3] || 0) + '/' + (cal[0] || 0) + ') — 80% if exact') +
+        '</div><p class="muted sm">Checked on out-of-bag held-out anchors across 250 seeded bootstrap refits (parameter-uncertainty bands; honest coverage reported even when narrow).</p>';
+    }
+    el('mdlCal').innerHTML = calHtml;
     el('mdlAbl').innerHTML = (MODEL.abl || []).map(function (s) {
       var stCls = s[8] === 'selected' ? 'v-farm' : (s[8] === 'dropped' ? 'v-skip' : 'v-thin');
       return '<tr' + (s[7] ? ' class="sel-row"' : '') + '><td>' + escapeHtml(s[1]) + '</td>' + TD_NUM + fmtMiss(s[4]) + '</td>' + TD_NUM + fmtPct(s[3]) + '</td>' +
@@ -356,8 +372,8 @@
       '<dt>Chains</dt><dd>' + escapeHtml(chains.join(', ')) + '</dd>' +
       '<dt>TVL / 7d</dt><dd>' + fmtDollars(row[4]) + ' (' + escapeHtml(chg) + ')</dd>' +
       '<dt>Tenure &amp; Cohort</dt><dd>' + (row[7] < 0 ? 'Undated' : row[7] + ' days') + ' · Band <b>' + escapeHtml(coh[0]) + '</b> · ' + coh[2] + '/' + coh[1] + ' tokenised (weight ' + Math.round(coh[3] / 10) + '%)</dd>' +
-      '<dt>Value if Launches</dt><dd><b>' + fmtDollars(row[22]) + '</b> · P25–75: ' + fmtMoney(row[28]) + '–' + fmtMoney(row[29]) + ' · P10–90: ' + fmtMoney(row[27]) + '–' + fmtMoney(row[30]) + '</dd>' +
-      '<dt>Expected Value</dt><dd><b class="implied">' + fmtDollars(row[6]) + '</b> · P25–75: ' + fmtMoney(row[25]) + '–' + fmtMoney(row[26]) + ' · P10–90: ' + fmtMoney(row[15]) + '–' + fmtMoney(row[16]) + '</dd>' +
+      '<dt>Value if Launches</dt><dd><b>' + fmtDollars(row[22]) + '</b> · P25–75 (conformal): ' + fmtMoney(row[28]) + '–' + fmtMoney(row[29]) + ' · P10–90 (conformal): ' + fmtMoney(row[27]) + '–' + fmtMoney(row[30]) + '</dd>' +
+      '<dt>Expected Value</dt><dd><b class="implied">' + fmtDollars(row[6]) + '</b> · P25–75 (conformal): ' + fmtMoney(row[25]) + '–' + fmtMoney(row[26]) + ' · P10–90 (conformal): ' + fmtMoney(row[15]) + '–' + fmtMoney(row[16]) + '</dd>' +
       kinHtml + '</dl>' +
       '<h3>Expected-Value Decomposition (TVL Elasticity ' + elastic + ')</h3>' +
       '<p class="break">Base ' + fmtDollars(row[9]) + ' × cat ' + cf.toFixed(3) + ' × growth ' + gf.toFixed(3) +

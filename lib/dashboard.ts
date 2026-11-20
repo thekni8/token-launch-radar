@@ -425,6 +425,24 @@ export function dashboardData(
         r.rangeCalibration.p10p90Hits,
         roundTo3dp(r.rangeCalibration.p10p90Rate),
       ],
+      // M8 conformal report, positional: [n, mean, sd, q10, q25, q75, q90,
+      // factor10, factor25, factor75, factor90, nested P25-75 rate, nested
+      // P10-90 rate]. The dashboard falls back to `cal` when this is absent.
+      conf: [
+        r.conformal.n,
+        roundTo3dp(r.conformal.meanResidual),
+        roundTo3dp(r.conformal.sdResidual),
+        roundTo3dp(r.conformal.q10),
+        roundTo3dp(r.conformal.q25),
+        roundTo3dp(r.conformal.q75),
+        roundTo3dp(r.conformal.q90),
+        roundTo3dp(r.conformal.factor10),
+        roundTo3dp(r.conformal.factor25),
+        roundTo3dp(r.conformal.factor75),
+        roundTo3dp(r.conformal.factor90),
+        roundTo3dp(r.conformal.nestedP25p75Rate),
+        roundTo3dp(r.conformal.nestedP10p90Rate),
+      ],
       abl: r.ablation.map((s) => [
         s.id,
         s.label,

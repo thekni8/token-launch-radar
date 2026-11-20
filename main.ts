@@ -148,7 +148,8 @@ function main(): void {
       tracked_count: snap.protocols.length,
       model:
         'Expected-value ranking (value-if-launches x empirical launch odds) for protocols that record no token. ' +
-        'Value-if-launches is a log-log hierarchical OLS model calibrated on circulating market cap of tokenised protocols in this snapshot with empirical-Bayes shrunk category intercepts, validated by 5-fold CV, 125-refit LOO, ablation, newest-listed holdout, and 250-refit out-of-bag range calibration. ' +
+        `Value-if-launches is a log-log hierarchical OLS model calibrated on circulating market cap of tokenised protocols in this snapshot with empirical-Bayes shrunk category intercepts, validated by 5-fold CV, ${fitted.report.fitN}-refit LOO, ablation, newest-listed holdout, and 250-refit out-of-bag range calibration. ` +
+        'Value bands are conformal prediction intervals from leave-one-out residuals, nested-validated. ' +
         'Launch odds reflect the age-band + category cohort tokenisation share shrunk to the snapshot base rate (LOO-validated). Farm plans optimize per-protocol deposit size over a deterministic grid net of chain gas.',
       model_report: fitted.report,
       audit: fitted.partition,

@@ -56,19 +56,23 @@ export interface ScoredProtocol {
   protocol: Protocol;
   /** Expected value = round(valueIfLaunchUsd * launchOdds); falls with rank. */
   impliedUsd: number;
-  /** P10 of expected value over the 250 bootstrap refits. */
+  /** P10 of expected value: conformal value band x launch odds. */
   impliedLowUsd: number;
-  /** P90 of expected value over the 250 bootstrap refits. */
+  /** P90 of expected value: conformal value band x launch odds. */
   impliedHighUsd: number;
-  /** P25 of expected value over the 250 bootstrap refits. */
+  /** P25 of expected value: conformal value band x launch odds. */
   impliedP25Usd: number;
-  /** P75 of expected value over the 250 bootstrap refits. */
+  /** P75 of expected value: conformal value band x launch odds. */
   impliedP75Usd: number;
   /** Value if the protocol launches, before the launch-odds multiplier. */
   valueIfLaunchUsd: number;
+  /** Conformal P10: point value x exp(q10 of the LOO log-residuals). */
   valueIfLaunchP10Usd: number;
+  /** Conformal P25: point value x exp(q25 of the LOO log-residuals). */
   valueIfLaunchP25Usd: number;
+  /** Conformal P75: point value x exp(q75 of the LOO log-residuals). */
   valueIfLaunchP75Usd: number;
+  /** Conformal P90: point value x exp(q90 of the LOO log-residuals). */
   valueIfLaunchP90Usd: number;
   /** Empirical cohort launch probability, in [0, 1]. */
   launchOdds: number;
@@ -96,6 +100,28 @@ export interface RangeCalibrationReport {
   n: number;
   p25p75Hits: number; p25p75Rate: number;
   p10p90Hits: number; p10p90Rate: number;
+  method: string;
+}
+
+// M8: conformal prediction intervals built from the winning specification's
+// LOO log-residuals. The q* fields are log-point quantiles of those
+// residuals; factor* is exp(q), the multiplier applied to a point value.
+// The nested* rates come from a 5-fold honest re-run (calibrate on four
+// folds, score the held fold), so they are not the in-sample fit.
+export interface ConformalReport {
+  n: number;
+  meanResidual: number;
+  sdResidual: number;
+  q10: number;
+  q25: number;
+  q75: number;
+  q90: number;
+  factor10: number;
+  factor25: number;
+  factor75: number;
+  factor90: number;
+  nestedP25p75Rate: number;
+  nestedP10p90Rate: number;
   method: string;
 }
 
@@ -129,6 +155,7 @@ export interface ModelReport {
   newestHoldout: { mdape: number; hit2x: number; n: number };
   loo: LooMetrics;
   rangeCalibration: RangeCalibrationReport;
+  conformal: ConformalReport;
   ablation: AblationStep[];
   launchOdds: LaunchOddsReport;
   categories: Array<{ name: string; n: number; intercept: number; weight: number }>;
@@ -998,6 +1025,88 @@ export function fitModel(snapshot: Snapshot): FittedModel {
   // M1: empirical launch-odds model.
   const oddsModel = fitCohortOdds(snapshot);
 
+  // M8: conformal bands from the winning specification's LOO log-residuals.
+  // The bootstrap bands only carry parameter uncertainty, so they miss the
+  // residual scatter entirely; the LOO residuals carry it. Quantiles of
+  // those residuals, exponentiated, become the band multipliers. The nested
+  // check below re-derives the whole thing inside 4/5 of the anchors and
+  // scores the held fifth, so the reported hold rates are honest.
+  const looErrs: number[] = [];
+  for (let k = 0; k < cvAnchors.length; k++) {
+    looErrs.push(Math.log(cvAnchors[k]!.mcap_usd!) - Math.log(selectedLoo.preds[k]!));
+  }
+  const errCount = looErrs.length;
+  let errTotal = 0;
+  for (let k = 0; k < errCount; k++) errTotal += looErrs[k]!;
+  const errMean = errCount > 0 ? errTotal / errCount : 0;
+  let sqDevTotal = 0;
+  for (let k = 0; k < errCount; k++) {
+    const dev = looErrs[k]! - errMean;
+    sqDevTotal += dev * dev;
+  }
+  const errSd = errCount > 1 ? Math.sqrt(sqDevTotal / (errCount - 1)) : 0;
+  const orderedErrs = [...looErrs].sort((a, b) => a - b);
+  const q10 = interpQuantile(orderedErrs, 0.1);
+  const q25 = interpQuantile(orderedErrs, 0.25);
+  const q75 = interpQuantile(orderedErrs, 0.75);
+  const q90 = interpQuantile(orderedErrs, 0.9);
+  const factor10 = Math.exp(q10);
+  const factor25 = Math.exp(q25);
+  const factor75 = Math.exp(q75);
+  const factor90 = Math.exp(q90);
+
+  // Nested honest validation: same i % 5 folds as the CV code, so the split
+  // is deterministic on the slug-sorted anchors.
+  let innerHits = 0;
+  let outerHits = 0;
+  let heldCount = 0;
+  for (let fold = 0; fold < 5; fold++) {
+    const foldTrain: Protocol[] = [];
+    const foldTest: Protocol[] = [];
+    for (let k = 0; k < cvAnchors.length; k++) {
+      if (k % 5 === fold) foldTest.push(cvAnchors[k]!);
+      else foldTrain.push(cvAnchors[k]!);
+    }
+    if (foldTrain.length === 0 || foldTest.length === 0) continue;
+
+    const foldLoo = looOls(foldTrain, snapshot.as_of, true, growthKept, ageKept);
+    const foldErrs: number[] = [];
+    for (let k = 0; k < foldTrain.length; k++) {
+      foldErrs.push(Math.log(foldTrain[k]!.mcap_usd!) - Math.log(foldLoo.preds[k]!));
+    }
+    foldErrs.sort((a, b) => a - b);
+    const fq10 = interpQuantile(foldErrs, 0.1);
+    const fq25 = interpQuantile(foldErrs, 0.25);
+    const fq75 = interpQuantile(foldErrs, 0.75);
+    const fq90 = interpQuantile(foldErrs, 0.9);
+
+    const foldFit = fitOlsParams(foldTrain, snapshot.as_of, growthKept, ageKept, true);
+    for (const held of foldTest) {
+      const heldPred = predictValue(held, foldFit, snapshot.as_of);
+      const heldErr = Math.log(held.mcap_usd!) - Math.log(heldPred);
+      heldCount++;
+      if (heldErr >= fq25 && heldErr <= fq75) innerHits++;
+      if (heldErr >= fq10 && heldErr <= fq90) outerHits++;
+    }
+  }
+
+  const conformal: ConformalReport = {
+    n: errCount,
+    meanResidual: errMean,
+    sdResidual: errSd,
+    q10,
+    q25,
+    q75,
+    q90,
+    factor10,
+    factor25,
+    factor75,
+    factor90,
+    nestedP25p75Rate: heldCount > 0 ? innerHits / heldCount : 0,
+    nestedP10p90Rate: heldCount > 0 ? outerHits / heldCount : 0,
+    method: 'LOO-residual conformal, nested-validated',
+  };
+
   const categories = [...finalParams.catCounts.entries()]
     .map(([name, n]) => ({
       name,
@@ -1059,6 +1168,7 @@ export function fitModel(snapshot: Snapshot): FittedModel {
     },
     loo: selectedLoo.metrics,
     rangeCalibration,
+    conformal,
     ablation,
     launchOdds: oddsModel.summary,
     categories,
@@ -1093,8 +1203,9 @@ export function fitModel(snapshot: Snapshot): FittedModel {
  * Build the board: every pre-token watchlist slug, plus every other pre-token
  * protocol that is a genuine launch candidate, ranked by expected value
  * (value-if-launches x P(launch)) descending, slug ascending breaking ties.
- * Carries P10–P90 and P25–P75 value bands and P10–P90 rank bands across the
- * 250 deterministic bootstrap refits.
+ * Value and EV bands are conformal intervals from the LOO residuals (M8);
+ * rank bands still come from the 250 deterministic bootstrap refits, since
+ * parameter uncertainty is the right input for ranks.
  */
 export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtocol[] {
   const watch = new Set(snapshot.watchlist);
@@ -1141,20 +1252,34 @@ export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtoc
   const m = candidates.length;
   const boot = bootstrapCache.get(model);
   const B = boot?.refits.length ?? 0;
+  const conf = model.report.conformal;
+
+  // M8: value bands are the point value times the conformal multipliers;
+  // EV bands are those (rounded) value bands times the launch odds, which
+  // stay fixed per protocol. Rank bands below still use the bootstrap.
+  const bandsFor = (c: (typeof candidates)[number]) => {
+    const valP10 = Math.max(1, Math.round(c.valueIfLaunchUsd * conf.factor10));
+    const valP25 = Math.max(1, Math.round(c.valueIfLaunchUsd * conf.factor25));
+    const valP75 = Math.max(1, Math.round(c.valueIfLaunchUsd * conf.factor75));
+    const valP90 = Math.max(1, Math.round(c.valueIfLaunchUsd * conf.factor90));
+    return {
+      impliedLowUsd: Math.max(1, Math.round(valP10 * c.launchOdds)),
+      impliedHighUsd: Math.max(1, Math.round(valP90 * c.launchOdds)),
+      impliedP25Usd: Math.max(1, Math.round(valP25 * c.launchOdds)),
+      impliedP75Usd: Math.max(1, Math.round(valP75 * c.launchOdds)),
+      valueIfLaunchP10Usd: valP10,
+      valueIfLaunchP25Usd: valP25,
+      valueIfLaunchP75Usd: valP75,
+      valueIfLaunchP90Usd: valP90,
+    };
+  };
 
   if (m === 0 || B === 0 || !boot) {
     return candidates.map((c, idx) => ({
       protocol: c.protocol,
       impliedUsd: c.impliedUsd,
-      impliedLowUsd: c.impliedUsd,
-      impliedHighUsd: c.impliedUsd,
-      impliedP25Usd: c.impliedUsd,
-      impliedP75Usd: c.impliedUsd,
+      ...bandsFor(c),
       valueIfLaunchUsd: c.valueIfLaunchUsd,
-      valueIfLaunchP10Usd: c.valueIfLaunchUsd,
-      valueIfLaunchP25Usd: c.valueIfLaunchUsd,
-      valueIfLaunchP75Usd: c.valueIfLaunchUsd,
-      valueIfLaunchP90Usd: c.valueIfLaunchUsd,
       launchOdds: c.launchOdds,
       launchCohort: c.launchCohort,
       rankLow: idx + 1,
@@ -1165,14 +1290,13 @@ export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtoc
     }));
   }
 
-  const evSamples: number[][] = Array.from({ length: m }, () => new Array<number>(B));
-  const valSamples: number[][] = Array.from({ length: m }, () => new Array<number>(B));
-  const rankSamples: number[][] = Array.from({ length: m }, () => new Array<number>(B));
-  const scratch: Array<{ idx: number; ev: number; val: number; slug: string }> = candidates.map(
+  // Only rank draws still need the bootstrap loop: one EV re-ranking per
+  // refit, recording where each candidate lands.
+  const rankDraws: number[][] = Array.from({ length: m }, () => new Array<number>(B));
+  const order: Array<{ idx: number; ev: number; slug: string }> = candidates.map(
     (c, idx) => ({
       idx,
       ev: 0,
-      val: 0,
       slug: c.protocol.slug,
     }),
   );
@@ -1180,74 +1304,33 @@ export function buildBoard(snapshot: Snapshot, model: FittedModel): ScoredProtoc
   for (let b = 0; b < B; b++) {
     const params = boot.refits[b]!;
     for (let i = 0; i < m; i++) {
-      const entry = scratch[i]!;
+      const slot = order[i]!;
       const cand = candidates[i]!;
       const valFloat = predictUnrounded(cand.protocol, params, boot.asOfDate);
-      const val = Math.max(1, Math.round(valFloat));
-      const ev = Math.max(1, Math.round(valFloat * cand.launchOdds));
-      entry.idx = i;
-      entry.slug = cand.protocol.slug;
-      entry.val = val;
-      entry.ev = ev;
+      slot.idx = i;
+      slot.slug = cand.protocol.slug;
+      slot.ev = Math.max(1, Math.round(valFloat * cand.launchOdds));
     }
-    scratch.sort((a, c) => c.ev - a.ev || (a.slug < c.slug ? -1 : a.slug > c.slug ? 1 : 0));
+    order.sort((a, c) => c.ev - a.ev || (a.slug < c.slug ? -1 : a.slug > c.slug ? 1 : 0));
     for (let r = 0; r < m; r++) {
-      const entry = scratch[r]!;
-      evSamples[entry.idx]![b] = entry.ev;
-      valSamples[entry.idx]![b] = entry.val;
-      rankSamples[entry.idx]![b] = r + 1;
+      rankDraws[order[r]!.idx]![b] = r + 1;
     }
   }
 
   return candidates.map((c, idx) => {
     const pointRank = idx + 1;
-    const evSorted = evSamples[idx]!.sort((a, b) => a - b);
-    const valSorted = valSamples[idx]!.sort((a, b) => a - b);
-    const rnkSorted = rankSamples[idx]!.sort((a, b) => a - b);
+    const drawsSorted = rankDraws[idx]!.sort((a, b) => a - b);
 
-    const qEvP10 = Math.max(1, Math.round(interpQuantile(evSorted, 0.1)));
-    const qEvP25 = Math.max(1, Math.round(interpQuantile(evSorted, 0.25)));
-    const qEvP75 = Math.max(1, Math.round(interpQuantile(evSorted, 0.75)));
-    const qEvP90 = Math.max(1, Math.round(interpQuantile(evSorted, 0.9)));
-
-    const impliedLowUsd = Math.min(c.impliedUsd, qEvP10);
-    const impliedHighUsd = Math.max(c.impliedUsd, qEvP90);
-    const impliedP25Usd = Math.max(impliedLowUsd, Math.min(qEvP25, impliedHighUsd));
-    const impliedP75Usd = Math.max(impliedP25Usd, Math.min(qEvP75, impliedHighUsd));
-
-    const qValP10 = Math.max(1, Math.round(interpQuantile(valSorted, 0.1)));
-    const qValP25 = Math.max(1, Math.round(interpQuantile(valSorted, 0.25)));
-    const qValP75 = Math.max(1, Math.round(interpQuantile(valSorted, 0.75)));
-    const qValP90 = Math.max(1, Math.round(interpQuantile(valSorted, 0.9)));
-
-    const valueIfLaunchP10Usd = Math.min(c.valueIfLaunchUsd, qValP10);
-    const valueIfLaunchP90Usd = Math.max(c.valueIfLaunchUsd, qValP90);
-    const valueIfLaunchP25Usd = Math.max(
-      valueIfLaunchP10Usd,
-      Math.min(qValP25, valueIfLaunchP90Usd),
-    );
-    const valueIfLaunchP75Usd = Math.max(
-      valueIfLaunchP25Usd,
-      Math.min(qValP75, valueIfLaunchP90Usd),
-    );
-
-    const qRankLow = Math.max(1, Math.round(interpQuantile(rnkSorted, 0.1)));
-    const qRankHigh = Math.min(m, Math.round(interpQuantile(rnkSorted, 0.9)));
-    const rankLow = Math.min(pointRank, qRankLow);
-    const rankHigh = Math.max(pointRank, qRankHigh);
+    const lowQ = Math.max(1, Math.round(interpQuantile(drawsSorted, 0.1)));
+    const highQ = Math.min(m, Math.round(interpQuantile(drawsSorted, 0.9)));
+    const rankLow = Math.min(pointRank, lowQ);
+    const rankHigh = Math.max(pointRank, highQ);
 
     return {
       protocol: c.protocol,
       impliedUsd: c.impliedUsd,
-      impliedLowUsd,
-      impliedHighUsd,
-      impliedP25Usd,
-      impliedP75Usd,
+      ...bandsFor(c),
       valueIfLaunchUsd: c.valueIfLaunchUsd,
-      valueIfLaunchP10Usd,
-      valueIfLaunchP25Usd,
-      valueIfLaunchP75Usd,
-      valueIfLaunchP90Usd,
       launchOdds: c.launchOdds,
       launchCohort: c.launchCohort,
       rankLow,

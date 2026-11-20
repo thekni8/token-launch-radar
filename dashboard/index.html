@@ -36,14 +36,14 @@
                 </div>
                 <div class="mdl-grid">
                     <div>
-                        <h4>Validation: 125-Refit LOO, 5-Fold CV &amp; Holdout</h4>
+                        <h4>Validation: LOO, 5-Fold CV &amp; Holdout</h4>
                         <table class="mini-tbl">
                             <thead>
                                 <tr><th>Evaluation Set</th><th class="num">N</th><th class="num">Med Miss</th><th class="num">MdAPE</th><th class="num">&le;2&times;</th><th class="num">&le;3&times;</th><th class="num">&rho;</th></tr>
                             </thead>
                             <tbody id="mdlCv"></tbody>
                         </table>
-                        <h4 class="mt">Range Calibration (OOB 250 Bootstrap Refits)</h4>
+                        <h4 class="mt">Range Calibration — Conformal Intervals (LOO Residuals, Nested-Validated)</h4>
                         <div class="cal-box" id="mdlCal"></div>
                     </div>
                     <div>
@@ -54,6 +54,7 @@
                             </thead>
                             <tbody id="mdlAbl"></tbody>
                         </table>
+                        <p class="caveat">Feature search: 9 feature sets + 2 robust fits tested under LOO/CV; none beat the baseline, so the point model is unchanged — the upgrade is honest intervals.</p>
                     </div>
                 </div>
                 <div class="mdl-grid">
